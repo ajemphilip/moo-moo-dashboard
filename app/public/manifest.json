@@ -1,0 +1,13 @@
+{
+  "name": "Moo Setup",
+  "short_name": "Moo",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF7E8",
+  "theme_color": "#F5C97B",
+  "description": "Set up and control your Moo storyteller over wifi or Bluetooth.",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
