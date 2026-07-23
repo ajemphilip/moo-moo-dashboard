@@ -85,11 +85,25 @@ async function finishConnection(selected: BluetoothDevice): Promise<string> {
   device = selected;
   connectPromise = (async () => {
     if (!selected.gatt) throw new Error("The selected device does not expose Bluetooth controls.");
-    const server = selected.gatt.connected ? selected.gatt : await selected.gatt.connect();
-    const service = await server.getPrimaryService(MOO_BLE_SERVICE_UUID);
-    requestCharacteristic = await service.getCharacteristic(REQUEST_UUID);
-    responseCharacteristic = await service.getCharacteristic(RESPONSE_UUID);
-    await responseCharacteristic.startNotifications();
+    const server = selected.gatt.connected
+      ? selected.gatt
+      : await runGattStep("connect to Moo", () => selected.gatt!.connect());
+    const service = await runGattStep(
+      "open Moo's Bluetooth service",
+      () => server.getPrimaryService(MOO_BLE_SERVICE_UUID),
+    );
+    requestCharacteristic = await runGattStep(
+      "open Moo's request channel",
+      () => service.getCharacteristic(REQUEST_UUID),
+    );
+    responseCharacteristic = await runGattStep(
+      "open Moo's response channel",
+      () => service.getCharacteristic(RESPONSE_UUID),
+    );
+    await runGattStep(
+      "enable Moo's Bluetooth responses",
+      () => responseCharacteristic!.startNotifications(),
+    );
     responseCharacteristic.removeEventListener("characteristicvaluechanged", onResponseFrame);
     responseCharacteristic.addEventListener("characteristicvaluechanged", onResponseFrame);
     selected.removeEventListener("gattserverdisconnected", onDisconnected);
@@ -102,6 +116,15 @@ async function finishConnection(selected: BluetoothDevice): Promise<string> {
     return await connectPromise;
   } finally {
     connectPromise = null;
+  }
+}
+
+async function runGattStep<T>(description: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Unknown Bluetooth error";
+    throw new Error(`Could not ${description}. ${detail}`);
   }
 }
 
@@ -157,7 +180,8 @@ export async function bluetoothRequest<T>(path: string, init?: RequestInit): Pro
     if (entry) {
       clearTimeout(entry.timer);
       pending.delete(requestId);
-      entry.reject(error instanceof Error ? error : new Error("Bluetooth write failed."));
+      const detail = error instanceof Error ? error.message : "Unknown Bluetooth error";
+      entry.reject(new Error(`Could not send a secure command to Moo. ${detail}`));
     }
   }
 
