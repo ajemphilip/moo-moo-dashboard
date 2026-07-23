@@ -16,6 +16,11 @@ export default function ConnectPage() {
   const [bluetoothBusy, setBluetoothBusy] = useState(false);
   const [bluetoothError, setBluetoothError] = useState<string | null>(null);
   const [setupCode, setSetupCode] = useState("");
+  const [supportsBluetooth, setSupportsBluetooth] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setSupportsBluetooth(bluetoothSupported());
+  }, []);
 
   const useBluetooth = async () => {
     setBluetoothBusy(true);
@@ -73,10 +78,10 @@ export default function ConnectPage() {
           value={setupCode}
           onChange={(event) => setSetupCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
         />
-        <Button onClick={useBluetooth} disabled={bluetoothBusy || !bluetoothSupported()}>
+        <Button onClick={useBluetooth} disabled={bluetoothBusy || supportsBluetooth !== true}>
           {bluetoothBusy ? "Connecting..." : "Find Moo with Bluetooth"}
         </Button>
-        {!bluetoothSupported() && (
+        {supportsBluetooth === false && (
           <p className="text-sm text-amber-700">Bluetooth setup is not supported by this browser. Use Chrome or Edge.</p>
         )}
         {bluetoothError && <p className="text-sm text-red-600">{bluetoothError}</p>}
