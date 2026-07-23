@@ -43,7 +43,14 @@ export default function WifiPage() {
           : "Couldn't find your Moo on the new network. Make sure your device has rejoined your home wifi, then try again.");
         setHandoff(false); setSubmitting(false); return;
       }
-      router.replace("/apikey");
+      try {
+        // Refresh the stored SSID without replacing an existing API key.
+        await api.postConfig({});
+      } catch {
+        // The API-key step can still save a complete config if this sync fails.
+      }
+      const status = await api.status();
+      router.replace(status.configured ? "/dashboard" : "/apikey");
     } catch (err) {
       setError(err instanceof PiApiError ? err.message : "Could not connect.");
       setHandoff(false); setSubmitting(false);

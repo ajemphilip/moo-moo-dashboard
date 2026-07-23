@@ -29,7 +29,13 @@ export default function ConnectPage() {
       setBluetoothPin(setupCode);
       await connectBluetooth();
       const status = await api.status();
-      router.replace(status.configured ? "/dashboard" : "/wifi");
+      router.replace(
+        !status.wifi_connected
+          ? "/wifi"
+          : status.configured
+            ? "/dashboard"
+            : "/apikey",
+      );
     } catch (error) {
       setBluetoothError(error instanceof Error ? error.message : "Could not connect over Bluetooth.");
       setBluetoothBusy(false);
