@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+openai==1.57.0
+sounddevice==0.5.1
+numpy==2.1.3
+python-multipart==0.0.19
+
+# Pi GPIO Braille driver (direct GPIO, no I2C expander)
+gpiozero==2.0.1
+lgpio==0.2.2.0
+
+# Bluetooth Low Energy GATT server (BlueZ backend on Raspberry Pi OS)
+bless==0.3.0

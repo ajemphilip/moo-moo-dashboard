@@ -1,0 +1,24 @@
+[Unit]
+Description=Moo Bluetooth Control Bridge
+After=hciuart.service bluetooth.service moo-setup.service
+Wants=hciuart.service bluetooth.service moo-setup.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/moo/pi
+Environment=PATH=/opt/moo/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/moo/pi
+ExecStartPre=/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStartPre=/usr/bin/bluetoothctl pairable on
+ExecStart=/opt/moo/venv/bin/python -m bluetooth_service.main
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

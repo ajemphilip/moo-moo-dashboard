@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""moo-setup — interactive CLI for configuring the Moo storyteller.
+
+Run as `moo-setup` from any shell on a freshly-flashed Pi. Prompts the
+maker for their OpenAI API key, validates it against OpenAI's models.list
+endpoint, saves it atomically to /etc/moo/config.json (mode 0600), and
+restarts the assistant service.
+
+Flags:
+  --reset       Wipe the saved config (useful for re-testing on a dev Pi).
+  --no-restart  Save config but skip the systemctl restart (useful in CI).
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# When invoked via /usr/local/bin/moo-setup wrapper, /opt/moo/pi is already
+# on the path. When invoked directly, point at the script's own dir so
+# `from config import ...` resolves.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import config as moo_config  # noqa: E402
+
+ASSISTANT_UNIT = "moo-assistant.service"
+EXIT_OK = 0
+EXIT_NETWORK = 2
+EXIT_INVALID = 3
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="moo-setup", description=__doc__)
+    parser.add_argument("--reset", action="store_true", help="Wipe saved config")
+    parser.add_argument("--no-restart", action="store_true", help="Skip restarting the assistant")
+    args = parser.parse_args()
+
+    print_banner()
+
+    if args.reset:
+        return do_reset()
+
+    cfg = moo_config.load_config()
+    existing_key = cfg.get("openai_api_key")
+    if existing_key:
+        masked = mask_key(existing_key)
+        print(f"An OpenAI key is already saved: {masked}")
+        if not yes_no("Replace it?", default=False):
+            print("Keeping the existing key. Nothing changed.")
+            return EXIT_OK
+
+    key = prompt_for_valid_key()
+    if key is None:
+        return EXIT_INVALID
+
+    moo_config.update_config(
+        {
+            "openai_api_key": key,
+            "configured_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    print("\n✓ Saved to /etc/moo/config.json")
+
+    if args.no_restart:
+        print("Skipping service restart (--no-restart).")
+    else:
+        restart_assistant()
+
+    print("\nMoo is ready. Speak to it and enjoy.")
+    return EXIT_OK
+
+
+def print_banner() -> None:
+    print()
+    print("┌─────────────────────────────────────────┐")
+    print("│   Moo — Braille storytelling assistant  │")
+    print("│   Setup wizard                          │")
+    print("└─────────────────────────────────────────┘")
+    print()
+
+
+def prompt_for_valid_key() -> str | None:
+    """Prompt for a key, validate against OpenAI, retry on bad input.
+
+    Returns the validated key or None if the user gave up / network failed.
+    """
+    print("Paste your OpenAI API key. It is hidden as you type.")
+    print("(Get one at https://platform.openai.com/api-keys)")
+    print()
+
+    for attempt in range(3):
+        try:
+            key = getpass.getpass("OpenAI API key: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return None
+
+        if not key:
+            print("Empty input — try again.\n")
+            continue
+        if not key.startswith("sk-"):
+            print("That doesn't look like an OpenAI key (should start with 'sk-').\n")
+            continue
+
+        print("Checking key with OpenAI...", end=" ", flush=True)
+        ok, error = validate_key(key)
+        if ok:
+            print("✓")
+            return key
+        print(f"✗\n  {error}\n")
+        if "AuthenticationError" in (error or "") or "Invalid" in (error or ""):
+            continue  # retry
+        # Non-auth error (network, timeout, etc.) — bail rather than spinning
+        print("Could not reach OpenAI. Check your wifi and try again later.")
+        sys.exit(EXIT_NETWORK)
+
+    print("Three failed attempts. Try again later.")
+    return None
+
+
+def validate_key(key: str) -> tuple[bool, str | None]:
+    try:
+        import openai
+    except ImportError:
+        return False, "openai package not installed (is the venv active?)"
+
+    try:
+        client = openai.OpenAI(api_key=key, timeout=10.0)
+        client.models.list()
+        return True, None
+    except openai.AuthenticationError:
+        return False, "Invalid API key"
+    except openai.APIConnectionError:
+        return False, "Could not reach OpenAI (network)"
+    except openai.RateLimitError:
+        return False, "Rate-limited by OpenAI — try again shortly"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def restart_assistant() -> None:
+    print(f"Restarting {ASSISTANT_UNIT}...", end=" ", flush=True)
+    rc = os.system(f"sudo systemctl restart {ASSISTANT_UNIT}")
+    if rc == 0:
+        print("✓")
+    else:
+        print("✗ (continue anyway, run `sudo systemctl status moo-assistant` to debug)")
+
+
+def do_reset() -> int:
+    cfg = moo_config.load_config()
+    if not cfg:
+        print("Nothing to reset — no config file found.")
+        return EXIT_OK
+    if not yes_no("Wipe the saved OpenAI key and preferences?", default=False):
+        print("Cancelled.")
+        return EXIT_OK
+    moo_config.reset_config()
+    print("✓ Config cleared.")
+    os.system(f"sudo systemctl stop {ASSISTANT_UNIT} 2>/dev/null")
+    return EXIT_OK
+
+
+def yes_no(question: str, default: bool = False) -> bool:
+    suffix = " [y/N] " if not default else " [Y/n] "
+    try:
+        ans = input(question + suffix).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+    if not ans:
+        return default
+    return ans in ("y", "yes")
+
+
+def mask_key(key: str) -> str:
+    if len(key) <= 12:
+        return "***"
+    return f"{key[:7]}...{key[-4:]}"
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,44 @@
+"""Letter → motor-index map.
+
+The 6 motors correspond to the 6 dots of a Braille cell; indexes are 0–5,
+and activated motors raise their dot. The mapping below is the canonical
+table for the Pi GPIO driver.
+"""
+
+from __future__ import annotations
+
+LETTER_DOTS: dict[str, tuple[int, ...]] = {
+    "A": (0,),
+    "B": (0, 2),
+    "C": (0, 1),
+    "D": (0, 1, 3),
+    "E": (0, 3),
+    "F": (0, 1, 2),
+    "G": (0, 1, 2, 3),
+    "H": (0, 2, 3),
+    "I": (1, 2),
+    "J": (1, 2, 3),
+    "K": (0, 4),
+    "L": (0, 2, 4),
+    "M": (0, 1, 2),
+    "N": (0, 1, 3, 4),
+    "O": (0, 3, 4),
+    "P": (0, 1, 2, 4),
+    "Q": (0, 1, 2, 3, 4),
+    "R": (0, 2, 3, 4),
+    "S": (1, 2, 4),
+    "T": (1, 2, 3, 4),
+    "U": (0, 4, 5),
+    "V": (0, 2, 4, 5),
+    "W": (1, 2, 3, 5),
+    "X": (0, 1, 4, 5),
+    "Y": (0, 1, 3, 4, 5),
+    "Z": (0, 3, 4, 5),
+}
+
+
+def dots_for(letter: str) -> tuple[int, ...]:
+    """Return the motor indexes to raise for a given letter, or () if unknown."""
+    if not letter:
+        return ()
+    return LETTER_DOTS.get(letter[0].upper(), ())

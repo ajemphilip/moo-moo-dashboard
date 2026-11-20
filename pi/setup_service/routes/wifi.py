@@ -1,0 +1,34 @@
+"""GET /wifi/scan, POST /wifi/connect."""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+
+from fastapi import APIRouter, HTTPException
+
+from ..models import WifiConnectRequest, WifiConnectResponse, WifiNetwork, WifiScanResponse
+from ..services import wifi_manager
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/wifi")
+
+
+@router.get("/scan", response_model=WifiScanResponse)
+def scan() -> WifiScanResponse:
+    nets = wifi_manager.scan_networks()
+    return WifiScanResponse(
+        networks=[WifiNetwork(ssid=n.ssid, signal=n.signal, secured=n.secured) for n in nets]
+    )
+
+
+@router.post("/connect", response_model=WifiConnectResponse)
+def connect(req: WifiConnectRequest) -> WifiConnectResponse:
+    try:
+        wifi_manager.connect_to_network(req.ssid, req.password)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not connect to {req.ssid}: {exc.stderr.strip() or 'comitup error'}",
+        ) from exc
+    return WifiConnectResponse()

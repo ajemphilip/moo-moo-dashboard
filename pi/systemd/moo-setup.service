@@ -1,0 +1,21 @@
+[Unit]
+Description=Moo Setup Service
+After=network.target
+
+[Service]
+Type=simple
+User=philipn1
+Group=philipn1
+SupplementaryGroups=audio gpio i2c
+WorkingDirectory=/opt/moo/pi
+Environment=PATH=/opt/moo/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/moo/pi
+Environment=MOO_CONFIG_PATH=/etc/moo/config.json
+ExecStart=/opt/moo/venv/bin/uvicorn setup_service.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

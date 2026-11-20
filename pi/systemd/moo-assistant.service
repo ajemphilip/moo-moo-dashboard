@@ -1,0 +1,24 @@
+[Unit]
+Description=Moo Voice Assistant
+After=network-online.target moo-setup.service
+Wants=network-online.target
+Requires=moo-setup.service
+ConditionPathExists=/etc/moo/config.json
+
+[Service]
+Type=simple
+User=philipn1
+Group=philipn1
+SupplementaryGroups=dialout audio gpio i2c
+WorkingDirectory=/opt/moo/pi
+Environment=PATH=/opt/moo/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/moo/pi
+Environment=MOO_CONFIG_PATH=/etc/moo/config.json
+ExecStart=/opt/moo/venv/bin/python -m assistant
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
