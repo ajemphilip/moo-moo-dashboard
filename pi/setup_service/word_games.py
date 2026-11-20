@@ -216,32 +216,80 @@ def name_letter(ctx, word: str) -> None:
     # Fixed words: a generated intro named the letter before the child felt it.
     ctx.audio.speak("Here is a letter. Feel it, and tell me which letter it is.")
     driver = braille_hw.acquire(ctx.owner)
-    driver.render_letter(ch)
-    time.sleep(1.6)  # let the dots rise before asking
-    question = "Feel the dots. Which letter is it?"
-    for attempt in range(2):
-        if ctx.stop.is_set():
-            break
-        ctx.audio.speak(question)
-        ctx.set(phase="listening", message=question)
-        heard = hear(ctx)
-        logger.info("letter game %s: heard %r", ch, heard)
-        ctx.set(phase="spelling")
-        if check_letter(ctx.client, ch, heard):
-            ctx.audio.play_cue("done")
-            ctx.audio.speak(f"Yes! That is the letter {ch}, from our word {word}!")
-            break
-        if attempt == 0:
-            question = "Good try! Feel it once more. Which letter is it?"
-        else:
-            ctx.audio.speak(
-                f"This one is the letter {ch}, like in {word}. Feel it now that you know it."
-            )
-            time.sleep(3.0)
+    # While the child explores the letter and guesses it, pressing the dots
+    # does nothing, so feeling the letter cannot lower it by accident.
+    driver.lower_on_press = False
     try:
-        driver.reset_cell()
-    except Exception:
-        pass
+        driver.render_letter(ch)
+        time.sleep(1.6)  # let the dots rise before asking
+        question = "Feel the dots. Which letter is it?"
+        for attempt in range(2):
+            if ctx.stop.is_set():
+                break
+            ctx.audio.speak(question)
+            ctx.set(phase="listening", message=question)
+            heard = hear(ctx)
+            logger.info("letter game %s: heard %r", ch, heard)
+            ctx.set(phase="spelling")
+            if check_letter(ctx.client, ch, heard):
+                ctx.audio.play_cue("done")
+                ctx.audio.speak(f"Yes! That is the letter {ch}, from our word {word}!")
+                break
+            if attempt == 0:
+                question = "Good try! Feel it once more. Which letter is it?"
+            else:
+                ctx.audio.speak(
+                    f"This one is the letter {ch}, like in {word}. Feel it now that you know it."
+                )
+                time.sleep(3.0)
+        if ctx.stop.is_set():
+            return
+
+        # Only now do the buttons clear the letter.
+        driver.pop_presses()
+        driver.lower_on_press = True
+        ctx.set(message=f"Press every raised dot of {ch} to clear it",
+                spell_dots_left=len(dots_for(ch)), spell_awaiting=True)
+        ctx.audio.speak("Now press each raised dot to clear the letter.")
+        _clear_letter(ctx, driver, ch)
+    finally:
+        driver.lower_on_press = True
+        try:
+            driver.reset_cell()
+        except Exception:
+            pass
+
+
+def _clear_letter(ctx, driver, ch: str) -> bool:
+    """Wait until the child has pressed every raised dot of `ch` down.
+
+    Returns True when the letter was cleared. A press on a dot that is not
+    part of the letter gets one gentle hint. A generous cap moves on anyway.
+    """
+    dots = set(dots_for(ch))
+    cleared: set[int] = set()
+    hinted = False
+    deadline = time.time() + SPELL_LETTER_TIMEOUT
+    while cleared != dots and not ctx.stop.is_set() and time.time() < deadline:
+        try:
+            presses = driver.pop_presses()
+        except Exception:
+            presses = []
+        for pressed, _t in presses:
+            if pressed in dots and pressed not in cleared:
+                cleared.add(pressed)
+                ctx.set(spell_dots_left=len(dots - cleared))
+            elif pressed not in dots:
+                logger.info("letter %s: press on dot %d, not in the letter", ch, pressed)
+                if not hinted:
+                    hinted = True
+                    ctx.audio.speak("That dot is already down. Feel for a raised one.")
+        time.sleep(0.08)
+    ctx.set(spell_awaiting=False)
+    if cleared == dots and not ctx.stop.is_set():
+        ctx.audio.play_cue("done")
+        return True
+    return False
 
 
 def build_letter(ctx, word: str) -> None:
