@@ -48,7 +48,9 @@ def _system_prompt(age_range: str | None, strict: bool = False) -> str:
         "frightening. Keep each part very short — 3 or 4 simple sentences, "
         "roughly 40 words, so it reads aloud in about 15 seconds. Tell each "
         "part all the way through without stopping in the middle, and end it "
-        "at a natural moment where the child could say what happens next."
+        "at a natural moment where the story could go on. End the part with "
+        "a statement, never with a question to the child — Moo asks what "
+        "happens next separately."
     )
     if strict:
         base += (
@@ -174,7 +176,7 @@ def generate_story(client, theme: str, age_range: str | None) -> str:
                     "content": (
                         f"Tell the opening of a gentle story about: {theme}. "
                         "It should feel complete on its own but leave room to "
-                        "continue. 3 or 4 short sentences, with no blanks or missing words."
+                        "continue. 3 or 4 short sentences, with no blanks or missing words. No questions to the child."
                     ),
                 },
             ],
@@ -229,7 +231,7 @@ def extend_story(
                         "Continue the SAME story with one more short, gentle scene "
                         "that follows naturally from what already happened — keep "
                         "the same characters and place." + want +
-                        " 3 or 4 short sentences, with no blanks or missing words."
+                        " 3 or 4 short sentences, with no blanks or missing words. No questions to the child."
                     ),
                 },
             ],
