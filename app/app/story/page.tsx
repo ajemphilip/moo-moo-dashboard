@@ -6,6 +6,16 @@ import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
 import { api, PiApiError, type StoryState } from "@/lib/api";
 
+// Dot positions 0-5 shown as 1-6, the same layout as calibration:
+//   1 4
+//   2 5
+//   3 6
+const DOT_GRID: number[][] = [
+  [0, 3],
+  [1, 4],
+  [2, 5],
+];
+
 const PHASE_LABEL: Record<StoryState["phase"], string> = {
   idle: "Getting ready…",
   greeting: "Moo is talking — listen!",
@@ -13,7 +23,7 @@ const PHASE_LABEL: Record<StoryState["phase"], string> = {
   thinking: "Moo is writing the story…",
   telling: "Moo is reading the story…",
   quiz: "Moo wants your child's idea — listen!",
-  spelling: "Spelling a word on the Braille cell…",
+  spelling: "Word game on the Braille cell…",
   ready: "Ready for the next part",
   done: "The end",
   error: "Something went wrong",
@@ -138,8 +148,8 @@ export default function StoryPage() {
         )}
         {phase === "listening" && (
           <p className="text-sm text-moo-accent">
-            🔔 After the chime, say the missing word out loud — Moo stops
-            listening when you pause.
+            🔔 After the chime, answer out loud — Moo waits until you stop
+            talking.
           </p>
         )}
         {state?.dry_run && (
@@ -149,8 +159,72 @@ export default function StoryPage() {
         )}
       </div>
 
+      {/* Name the letter */}
+      {state?.game_mode === "name" && state.spell_letter && (
+        <div className="moo-card flex flex-col gap-2 items-center text-center">
+          <p className="text-xs uppercase tracking-wide text-moo-ink/40">
+            Which letter is this?
+          </p>
+          <div className="w-16 h-16 rounded-moo flex items-center justify-center text-3xl font-bold bg-moo-accent text-white">
+            {state.spell_letter}
+          </div>
+          <p className="text-sm text-moo-ink/70">
+            A letter from <strong>{state.spelling_word}</strong> is raised. Your
+            child feels it and says the letter out loud.
+          </p>
+        </div>
+      )}
+
+      {/* Riddle, then build the letter */}
+      {state?.game_mode === "build" && (
+        <div className="moo-card flex flex-col gap-3 items-center text-center">
+          <p className="text-xs uppercase tracking-wide text-moo-ink/40">
+            Riddle and make a letter
+          </p>
+          {state.spell_letter ? (
+            <>
+              <p className="text-sm text-moo-ink/80">
+                Make the letter <strong>{state.spell_letter}</strong> from{" "}
+                <strong>{state.spelling_word}</strong>: press dots to raise
+                them, press again to lower.
+              </p>
+              <div className="grid grid-rows-3 grid-flow-col gap-x-6 gap-y-2">
+                {DOT_GRID.flatMap((row) =>
+                  row.map((dot) => {
+                    const up = (state.build_raised ?? []).includes(dot);
+                    const wanted = (state.build_target ?? []).includes(dot);
+                    return (
+                      <div
+                        key={dot}
+                        className={`w-11 h-11 rounded-full border-2 flex items-center justify-center text-sm font-semibold ${
+                          up && wanted
+                            ? "bg-emerald-500 text-white border-emerald-500"
+                            : up
+                              ? "bg-amber-400 text-white border-amber-400"
+                              : wanted
+                                ? "bg-white border-moo-accent border-dashed"
+                                : "bg-white border-moo-ink/20"
+                        }`}
+                      >
+                        {dot + 1}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <p className="text-xs text-moo-ink/50">
+                Dashed: dots the letter needs. Green: raised and right. Yellow:
+                raised but not part of the letter.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-moo-ink/70">Moo is telling a riddle — listen!</p>
+          )}
+        </div>
+      )}
+
       {/* Interactive spelling */}
-      {phase === "spelling" && state?.spelling_word && (
+      {phase === "spelling" && state?.game_mode !== "name" && state?.game_mode !== "build" && state?.spelling_word && (
         <div className="moo-card flex flex-col gap-3 items-center text-center">
           <p className="text-xs uppercase tracking-wide text-moo-ink/40">
             Spelling

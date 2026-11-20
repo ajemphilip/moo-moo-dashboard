@@ -153,6 +153,9 @@ export interface StoryState {
   story: string | null;
   parts: number;
   spelling_word: string | null;
+  game_mode?: "spell" | "name" | "build" | null;
+  build_raised?: number[];
+  build_target?: number[];
   spell_letter: string | null;
   spell_index: number | null;
   spell_total: number | null;

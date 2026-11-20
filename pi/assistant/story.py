@@ -108,6 +108,23 @@ _LINES: dict[str, tuple[str, str]] = {
         "going or NO if they want to finish.",
         "Would you like to hear more of our story? Say yes or no.",
     ),
+    "next_prompt": (
+        "Ask the child in ONE short, excited sentence what should happen next "
+        "in the story, and tell them they can say 'the end' when they want to "
+        "finish.",
+        "What should happen next? Or say 'the end' to finish our story.",
+    ),
+    "letter_intro": (
+        "Say ONE short, playful sentence inviting the child to feel a letter "
+        "from the word '{word}' on the Braille cell and say out loud which "
+        "letter it is.",
+        "Here is a letter from our word. Feel it and tell me which letter it is!",
+    ),
+    "riddle_intro": (
+        "Say ONE short, playful sentence telling the child you have a little "
+        "riddle for them.",
+        "I have a little riddle for you!",
+    ),
     "goodbye": (
         "Say ONE short, warm farewell as the storytelling session ends.",
         "What a wonderful story we told together — goodbye for now!",
@@ -328,8 +345,9 @@ def pick_story_word(
                         "From the story below, choose ONE word for the child "
                         "to spell. It must be important and meaningful to the "
                         "story — a character, place, animal, or key object — "
-                        "and simple and short, 3 to 7 letters, easy for a "
-                        "young child." + avoid + " Reply with ONLY that single "
+                        f"and simple and short, {_word_length(age_range)} letters, "
+                        "easy for a young child." + avoid + " Reply with ONLY "
+                        "that single "
                         f"word.\n\n{story_so_far}"
                     ),
                 },
@@ -440,6 +458,96 @@ def check_answer(
     except Exception:
         logger.warning("answer check failed; accepting the answer", exc_info=True)
         return True, ""
+
+
+def _word_length(age_range: str | None) -> str:
+    """Letters in the word for each age range, so the word fits the child."""
+    if age_range in ("0-3", "3-5"):
+        return "3 or 4"
+    return "4 to 6"
+
+
+def _yes_no(client, instruction: str) -> bool | None:
+    """Ask the model a yes or no question. None if the call fails."""
+    try:
+        resp = client.chat.completions.create(
+            model=CHAT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Answer as JSON with one key, \"yes\", true or false.",
+                },
+                {"role": "user", "content": instruction},
+            ],
+            max_tokens=20,
+        )
+        return bool(json.loads(resp.choices[0].message.content or "{}").get("yes"))
+    except Exception:
+        logger.warning("yes/no check failed", exc_info=True)
+        return None
+
+
+def check_letter(client, letter: str, heard: str) -> bool:
+    """Did the child name `letter`? Speech recognition often writes a letter
+    as its name or a sound-alike (B as 'bee', S as 'ess' or 'yes')."""
+    heard = (heard or "").strip()
+    if not heard:
+        return False
+    plain = re.sub(r"[^a-z]", "", heard.lower())
+    if plain in (letter.lower(), f"letter{letter.lower()}"):
+        return True
+    verdict = _yes_no(
+        client,
+        f"A young child was asked to name a single letter of the alphabet. "
+        f"The right letter is {letter.upper()}. Speech recognition heard: "
+        f'"{heard}". Did the child say the letter {letter.upper()}, counting '
+        "its spoken name and common mishearings of it?",
+    )
+    return bool(verdict)
+
+
+def make_riddle(client, word: str, age_range: str | None = None) -> str:
+    """A short riddle whose answer is `word`, without saying the word."""
+    try:
+        resp = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": _system_prompt(age_range)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Make a very short, gentle riddle for the child whose "
+                        f"answer is '{word}'. Two short sentences at most, end "
+                        "with 'What am I?' or a similar question, and never "
+                        "say the word itself. Reply with just the riddle."
+                    ),
+                },
+            ],
+            max_tokens=60,
+        )
+        text = resp.choices[0].message.content.strip()
+        if text and word.lower() not in text.lower():
+            return text
+    except Exception:
+        logger.warning("make_riddle failed", exc_info=True)
+    return f"I am in our story, and I start with the letter {word[0].upper()}. What am I?"
+
+
+def check_guess(client, word: str, heard: str) -> bool:
+    """Did the child guess `word` (or something that clearly means it)?"""
+    heard = (heard or "").strip()
+    if not heard:
+        return False
+    if word.lower() in re.findall(r"[a-z]+", heard.lower()):
+        return True
+    verdict = _yes_no(
+        client,
+        f"A child answered a riddle whose answer is '{word}'. Speech "
+        f'recognition heard: "{heard}". Is the answer the same thing as '
+        f"'{word}', allowing plurals, small mishearings and synonyms?",
+    )
+    return bool(verdict)
 
 
 def word_to_spell(answer: str, fallback_story: str) -> str:

@@ -201,4 +201,10 @@ class StoryState(BaseModel):
     spell_total: Optional[int] = None      # letter count of the word
     spell_dots_left: Optional[int] = None  # raised dots not yet lowered
     spell_awaiting: bool = False           # True while waiting for the child
+    # Which word game runs: spell | name | build, or None between games.
+    game_mode: Optional[str] = None
+    # Dots the child has raised so far in the build game, 0-5.
+    build_raised: list[int] = []
+    # Dots that make the letter in the build game, 0-5.
+    build_target: list[int] = []
     error: Optional[str] = None

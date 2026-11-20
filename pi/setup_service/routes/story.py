@@ -17,6 +17,7 @@ spelling -> ready).
 from __future__ import annotations
 
 import logging
+import random
 import re
 import threading
 import time
@@ -39,6 +40,9 @@ _OWNER = "story"
 SPELL_LETTER_TIMEOUT = 120.0
 
 _SPELL_FIELDS = dict(
+    game_mode=None,
+    build_raised=[],
+    build_target=[],
     spell_letter=None,
     spell_index=None,
     spell_total=None,
@@ -127,101 +131,90 @@ def _listen(question: str) -> str:
     return second
 
 
-def _tell_and_fill(part_text: str) -> tuple[str, str]:
-    """Read a story part aloud, let the child fill in its blank.
+def _tell(part_text: str) -> str:
+    """Read one story part aloud, all the way through. Returns the text read.
 
-    Each part is written with one ``___`` blank. Moo reads up to the blank,
-    the child says the missing word, then Moo reads the rest with the word
-    in place. Returns the completed part text and the child's word (for
-    spelling). If the model left no blank, Moo reads the whole part and asks
-    a co-create question instead, so the flow never breaks.
+    The model is asked for parts without blanks. If one still slips in, the
+    blank is read as "something" so the story never stops mid-sentence.
     """
-    global _steer_question, _steer_answer
-    from assistant.story import (
-        ask_blank_question,
-        ask_cocreate_question,
-        generate_line,
-        split_blank,
-        word_to_spell,
-    )
+    from assistant.story import split_blank
 
     before, after = split_blank(part_text)
-
-    if after is not None:
-        # Fill-in-the-blank flow — the child's word lands inside the story.
-        _steer_question, _steer_answer = "", ""
-        _set(phase="telling", message="Here comes the fun part — listen!")
-        _audio.speak(generate_line(_client, "blank_intro", _age_range))
-        _audio.speak(before)
-        if _stop.is_set():
-            return part_text.replace("___", "____"), ""
-
-        # An enthusiastic, clear question so the blank never feels abrupt.
-        question = ask_blank_question(_client, before, after, _age_range)
-        _set(phase="quiz", message=question)
-        _audio.speak(question)
-        if _stop.is_set():
-            return part_text.replace("___", "____"), ""
-
-        _set(phase="listening", message=question)
-        answer = _listen(question)
-        word = word_to_spell(answer, part_text)
-        logger.info("blank fill: heard %r -> %s", answer, word)
-
-        completed = f"{before}{word}{after}".strip()
-        cheer = generate_line(_client, "cheer", _age_range, word=word)
-        _set(phase="telling", message=f"You said {word}! {completed}")
-        # Don't re-read the part the child just heard. The cheer line
-        # announces their word; then we continue from after the blank.
-        after_tail = after.strip().lstrip(".").strip()
-        _audio.speak(f"{cheer} {after_tail}")
-        return completed, word
-
-    # Fallback: model left no blank — read the part, then ask for an idea.
-    _set(phase="telling", message=part_text)
-    _audio.speak(part_text)
-    if _stop.is_set():
-        return part_text, ""
-    _set(phase="quiz", message="Moo wants your child's idea…")
-    question = ask_cocreate_question(_client, part_text, _age_range)
-    _set(message=question)
-    _audio.speak(question)
-    if _stop.is_set():
-        return part_text, ""
-    _set(phase="listening", message="Listening for your idea…")
-    answer = _listen(question)
-    _steer_question, _steer_answer = question, answer
-    return part_text, word_to_spell(answer, part_text)
+    text = part_text if after is None else f"{before}something{after}".strip()
+    _set(phase="telling", message=text)
+    _audio.speak(text)
+    return text
 
 
-def _spell_word(story_full: str) -> None:
-    """Spell a meaningful word from the story, one letter at a time.
+# --- Word games ----------------------------------------------------------------
+# After each part Moo plays one game with a word from that part. The mix keeps
+# it from turning into pressing only: spelling the word, reading one letter,
+# or a riddle after which the child builds a letter by raising its dots.
 
-    Each letter is rendered with the SAME driver call as the letter-practice
-    exercise (`render_letter`): its dots up, every other dot down, and they
-    stay up — no timer. The child feels the letter and presses a button for
-    each raised dot to lower it; only when EVERY dot of the letter is down
-    does spelling move to the next letter. A generous safety cap advances
-    anyway if a dot can never be cleared.
-    """
-    from assistant.story import generate_line, pick_spelling_word, pick_story_word
+_GAME_WEIGHTS = {
+    "0-3": {"spell": 0.6, "name": 0.4, "build": 0.0},
+    "3-5": {"spell": 0.4, "name": 0.35, "build": 0.25},
+    "5-8": {"spell": 0.34, "name": 0.33, "build": 0.33},
+}
+_last_game: str | None = None
+BUILD_TIMEOUT = 90.0      # seconds before Moo shows the letter
+BUILD_HINT_AFTER = 45.0   # seconds before Moo lets the child feel the letter
 
-    # The LLM picks a meaningful word, avoiding any already spelled this session.
-    word = pick_story_word(_client, story_full, _age_range, exclude=_spelled_words)
-    letters = [c for c in word.upper() if c.isalpha()]
-    if not letters:
-        word = pick_spelling_word(story_full, _spelled_words)
-        letters = [c for c in word.upper() if c.isalpha()]
+
+def _pick_game() -> str:
+    global _last_game
+    weights = dict(_GAME_WEIGHTS.get(_age_range, _GAME_WEIGHTS["3-5"]))
+    # Avoid the same game twice in a row when another one is possible.
+    if _last_game and sum(v for k, v in weights.items() if k != _last_game) > 0:
+        weights[_last_game] = 0.0
+    games = [g for g, w in weights.items() if w > 0]
+    game = random.choices(games, weights=[weights[g] for g in games])[0]
+    _last_game = game
+    return game
+
+
+def _pick_word(text: str) -> str:
+    from assistant.story import pick_spelling_word, pick_story_word
+
+    word = pick_story_word(_client, text, _age_range, exclude=_spelled_words)
+    if not [c for c in word if c.isalpha()]:
+        word = pick_spelling_word(text, _spelled_words)
     _spelled_words.add(word.lower())
+    return word
 
+
+def _word_game(part_text: str) -> None:
+    word = _pick_word(part_text)
+    game = _pick_game()
+    logger.info("word game: %s with %r", game, word)
+    if game == "name":
+        _name_letter(word)
+    elif game == "build":
+        _build_letter(word)
+    else:
+        _spell_word(word)
+    _set(**_SPELL_FIELDS)
+
+
+def _spell_word(word: str) -> None:
+    """Spell `word` one letter at a time.
+
+    Each letter is raised and stays up. The child feels it and presses a
+    button for each raised dot to lower it; only when EVERY dot of the letter
+    is down does spelling move on. A press on a dot that is not part of the
+    letter gets one gentle hint per letter. A generous cap moves on anyway if
+    a dot can never be cleared.
+    """
+    from assistant.story import generate_line
+
+    letters = [c for c in word.upper() if c.isalpha()]
     _set(
         phase="spelling",
+        game_mode="spell",
         message=f"Let's spell: {word}",
         spelling_word=word,
         spell_total=len(letters),
     )
-    # A cheerful sentence to celebrate the story before the spelling game.
-    _audio.speak(generate_line(_client, "praise", _age_range))
     opener = generate_line(_client, "spell_intro", _age_range, word=word)
     _audio.speak(
         f"{opener} Feel each letter, then press a button for every raised "
@@ -247,13 +240,10 @@ def _spell_word(story_full: str) -> None:
         except Exception:
             pass
         _audio.speak(f"The letter {ch}.")
-
-        # Render this letter exactly like the letter-practice exercise:
-        # its dots up, every other dot down, left raised until cleared.
         driver.render_letter(ch)
 
-        # Wait until the child has lowered EVERY dot of this letter.
         cleared: set[int] = set()
+        hinted = False
         _set(spell_awaiting=True)
         deadline = time.time() + SPELL_LETTER_TIMEOUT
         while cleared != dots and not _stop.is_set() and time.time() < deadline:
@@ -267,66 +257,253 @@ def _spell_word(story_full: str) -> None:
                     _set(spell_dots_left=len(dots - cleared))
                 elif pressed not in dots:
                     logger.info("spelling %s: press on dot %d, not in the letter", ch, pressed)
+                    if not hinted:
+                        hinted = True
+                        _audio.speak("That dot is already down. Feel for a raised one.")
             time.sleep(0.08)
         _set(spell_awaiting=False)
-        # The next letter's render lowers any dots still up.
+        if cleared == dots and not _stop.is_set():
+            _audio.play_cue("done")
 
     try:
-        driver.reset_cell()  # leave the cell flat after the last letter
+        driver.reset_cell()
     except Exception:
         pass
-    _set(**_SPELL_FIELDS)
+    if not _stop.is_set():
+        _audio.speak(f"You spelled {word}!")
 
 
-_NO_WORDS = {"no", "nope", "nah", "stop", "done", "finish", "end", "enough", "nothing"}
-_YES_WORDS = {
-    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please",
-    "more", "another", "again", "ready", "continue",
-}
+def _hear() -> str:
+    return (_audio.transcribe(_audio.record_until_silence()) or "").strip()
 
 
-def _ask_continue() -> bool:
-    """Verbally ask the child if they want more; parse yes/no from the answer.
+def _name_letter(word: str) -> None:
+    """Raise one letter of `word` and ask the child to say which letter it is."""
+    from assistant.story import check_letter, generate_line
 
-    Returns True to continue, False to end. Silence counts as no (child
-    likely wandered off). Any clear "no" word ends; otherwise any spoken
-    response counts as yes — kids' speech is hard to transcribe perfectly.
+    letters = [c for c in word.upper() if c.isalpha()]
+    ch = letters[0] if _age_range == "0-3" else random.choice(letters)
+    _set(
+        phase="spelling",
+        game_mode="name",
+        spelling_word=word,
+        spell_letter=ch,
+        spell_total=len(letters),
+        spell_index=letters.index(ch),
+        message="Which letter is this? Feel the dots and say it out loud.",
+    )
+    _audio.speak(generate_line(_client, "letter_intro", _age_range, word=word))
+    driver = braille_hw.acquire(_OWNER)
+    driver.render_letter(ch)
+    time.sleep(1.6)  # let the dots rise before asking
+    question = "Feel the dots. Which letter is it?"
+    for attempt in range(2):
+        if _stop.is_set():
+            break
+        _audio.speak(question)
+        _set(phase="listening", message=question)
+        heard = _hear()
+        logger.info("letter game %s: heard %r", ch, heard)
+        _set(phase="spelling")
+        if check_letter(_client, ch, heard):
+            _audio.play_cue("done")
+            _audio.speak(f"Yes! That is the letter {ch}, from our word {word}!")
+            break
+        if attempt == 0:
+            question = "Good try! Feel it once more. Which letter is it?"
+        else:
+            _audio.speak(
+                f"This one is the letter {ch}, like in {word}. Feel it now that you know it."
+            )
+            time.sleep(3.0)
+    try:
+        driver.reset_cell()
+    except Exception:
+        pass
+
+
+def _build_letter(word: str) -> None:
+    """A riddle about `word`, then the child raises the dots of its first letter.
+
+    All dots start down. Pressing a dot raises it, pressing it again lowers
+    it. When exactly the dots of the letter are up, the letter is made.
     """
-    from assistant.story import generate_line
+    from assistant.story import check_guess, generate_line, make_riddle
 
-    _set(phase="quiz", message="Should we hear more? Say yes or no.")
-    question = generate_line(_client, "continue_prompt", _age_range)
-    _set(message=question)
-    _audio.speak(question)
+    letters = [c for c in word.upper() if c.isalpha()]
+    ch = letters[0]
+    dots = set(dots_for(ch))
+    driver = braille_hw.acquire(_OWNER)
+    try:
+        driver.reset_cell()
+    except Exception:
+        pass
+
+    _set(phase="quiz", game_mode="build", spelling_word=word, spell_letter=None,
+         message="A riddle!")
+    riddle = make_riddle(_client, word, _age_range)
+    _audio.speak(generate_line(_client, "riddle_intro", _age_range))
+    _set(message=riddle)
+    _audio.speak(riddle)
     if _stop.is_set():
-        return False
+        return
+    _set(phase="listening", message=riddle)
+    heard = _hear()
+    logger.info("riddle %r: heard %r", word, heard)
+    if check_guess(_client, word, heard):
+        _audio.speak(f"Yes, it is {word}!")
+    else:
+        _audio.speak(f"Good guess! The answer is {word}.")
+    if _stop.is_set():
+        return
 
-    _set(phase="listening", message="Say yes to keep going, or no to finish.")
-    answer = (_audio.transcribe(_audio.record_until_silence()) or "").strip().lower()
-    logger.info("continue answer: %r", answer)
-    if not answer:
+    _set(phase="spelling", spell_letter=ch, build_raised=[], build_target=sorted(dots),
+         message=f"Make the letter {ch}: press its dots to raise them")
+    _audio.speak(
+        f"{word} starts with the letter {ch}. Can you make the letter {ch}? "
+        "Press a dot to raise it, and press it again to lower it."
+    )
+    driver.lower_on_press = False
+    raised: set[int] = set()
+    last_toggle = [0.0] * 6
+    last_motor = 0.0
+    hinted_wrong: set[int] = set()
+    hint_given = False
+    started = time.time()
+    made = False
+    try:
+        driver.pop_presses()
+        while not _stop.is_set() and time.time() - started < BUILD_TIMEOUT:
+            for b, t in driver.pop_presses():
+                if not 0 <= b < 6:
+                    continue
+                # Motor current can glitch the button lines. Ignore a press
+                # right after a motor started, and a repeat of the same dot
+                # within 0.8 s.
+                if t - last_motor < 0.15 or t - last_toggle[b] < 0.8:
+                    continue
+                last_toggle[b] = t
+                last_motor = time.monotonic()
+                if b in raised:
+                    driver.lower_motor(b)
+                    raised.discard(b)
+                else:
+                    driver.raise_motor(b)
+                    raised.add(b)
+                _set(build_raised=sorted(raised))
+                if b in raised and b not in dots and b not in hinted_wrong:
+                    hinted_wrong.add(b)
+                    _audio.speak(f"That dot is not part of {ch}. Press it again to lower it.")
+            if raised == dots:
+                made = True
+                break
+            if not hint_given and time.time() - started > BUILD_HINT_AFTER:
+                hint_given = True
+                _audio.speak(f"Here is a hint. Feel the letter {ch}.")
+                driver.render_letter(ch)
+                time.sleep(4.0)
+                driver.reset_cell()
+                raised = set()
+                _set(build_raised=[])
+                driver.pop_presses()
+                _audio.speak("Now you try. Press the dots to make it.")
+            time.sleep(0.08)
+        if _stop.is_set():
+            return
+        if made:
+            _audio.play_cue("done")
+            _audio.speak(f"You made the letter {ch}! Wonderful!")
+            time.sleep(1.5)
+        else:
+            _audio.speak(f"This is the letter {ch}. Feel it.")
+            driver.render_letter(ch)
+            time.sleep(3.0)
+    finally:
+        driver.lower_on_press = True
+        try:
+            driver.reset_cell()
+        except Exception:
+            pass
+
+
+# --- The round: tell, play, ask -------------------------------------------------
+
+_END_WORDS = {"stop", "finish", "finished", "done", "enough", "bye", "goodbye"}
+
+
+def _wants_end(heard: str) -> bool:
+    words = re.findall(r"[a-z]+", heard.lower())
+    if not words:
         return False
-    tokens = set(re.findall(r"[a-z]+", answer))
-    if tokens & _NO_WORDS:
-        return False
-    if tokens & _YES_WORDS:
+    text = " ".join(words)
+    if text.startswith("the end") or text in ("end", "no more", "no"):
         return True
-    return True  # spoke something but unclear — default to continue
+    return len(words) <= 4 and bool(set(words) & _END_WORDS)
+
+
+def _ask_next() -> str | None:
+    """Ask what happens next. Returns the child's idea, or None to end."""
+    global _steer_question, _steer_answer
+    from assistant.story import check_answer, generate_line
+
+    question = generate_line(_client, "next_prompt", _age_range)
+    heard = ""
+    for attempt in range(2):
+        if _stop.is_set():
+            return None
+        _set(phase="quiz", message=question)
+        _audio.speak(question)
+        _set(phase="listening", message=question)
+        heard = _hear()
+        logger.info("next idea: %r", heard)
+        if _wants_end(heard):
+            return None
+        if not heard:
+            question = "I didn't hear you. What should happen next? Or say the end."
+            continue
+        fits, reply = check_answer(_client, question, heard, _age_range)
+        logger.info("answer check: %r fits=%s", heard, fits)
+        if fits:
+            if reply:
+                _set(message=reply)
+                _audio.speak(reply)
+            _steer_question, _steer_answer = question, heard
+            return heard
+        question = reply or question
+    if heard:
+        _steer_question, _steer_answer = question, heard
+        return heard
+    return None
+
+
+def _story_loop(part: str) -> None:
+    """Tell a part, play a word game with it, ask what happens next, repeat."""
+    from assistant.story import extend_story, generate_line
+
+    while not _stop.is_set():
+        told = _tell(part)
+        with _lock:
+            prior = _state["story"] or ""
+            parts = _state["parts"] + 1
+        full = (prior + "\n\n" + told).strip()
+        _set(story=full, parts=parts)
+        if _stop.is_set():
+            return
+        _word_game(told)
+        if _stop.is_set():
+            return
+        idea = _ask_next()
+        if idea is None:
+            _audio.speak(generate_line(_client, "goodbye", _age_range))
+            _set(phase="done", message="The end — what a great story we made!")
+            return
+        _set(phase="thinking", message="Writing the next part…")
+        part = extend_story(_client, full, _steer_question, _steer_answer, _age_range)
 
 
 def _run_first() -> None:
-    """Voice-driven session: part 1, then loop on voice yes/no for more parts.
-
-    Replaces the old "tap Continue" model — after each part Moo asks if the
-    child wants to keep going, listens for their answer, and either extends
-    the story or ends with a goodbye.
-    """
-    from assistant.story import (
-        extend_story,
-        generate_intro,
-        generate_line,
-        generate_story,
-    )
+    """Voice-driven session: greeting, theme, then the story loop."""
+    from assistant.story import generate_intro, generate_story
 
     try:
         _set(phase="greeting", message="Moo is saying hello…", error=None)
@@ -347,67 +524,24 @@ def _run_first() -> None:
         story = generate_story(_client, theme, _age_range)
         if _stop.is_set():
             return
-
-        completed, _word = _tell_and_fill(story)
-        _set(story=completed, parts=1)
-        if _stop.is_set():
-            return
-        _spell_word(completed)
-
-        # Voice-driven loop: ask "more?" and either extend or end.
-        while not _stop.is_set():
-            if not _ask_continue():
-                _audio.speak(generate_line(_client, "goodbye", _age_range))
-                _set(phase="done", message="The end — what a great story we made!")
-                return
-
-            with _lock:
-                prior = _state["story"] or ""
-            _set(phase="thinking", message="Writing the next part…")
-            extension = extend_story(
-                _client, prior, _steer_question, _steer_answer, _age_range
-            )
-            if _stop.is_set():
-                return
-
-            completed_ext, _word = _tell_and_fill(extension)
-            full = (prior + "\n\n" + completed_ext).strip()
-            with _lock:
-                parts = _state["parts"] + 1
-            _set(story=full, parts=parts)
-            if _stop.is_set():
-                return
-            _spell_word(full)
+        _story_loop(story)
     except Exception as exc:  # noqa: BLE001
         logger.exception("story session failed")
         _set(phase="error", error=str(exc))
 
 
 def _run_continue() -> None:
-    from assistant.story import extend_story, generate_line
+    """Continue after an error or a manual pause, from the phone."""
+    from assistant.story import extend_story
 
     try:
         with _lock:
             prior = _state["story"] or ""
-
         _set(phase="thinking", message="Writing the next part…", error=None)
-        extension = extend_story(
-            _client, prior, _steer_question, _steer_answer, _age_range
-        )
+        part = extend_story(_client, prior, _steer_question, _steer_answer, _age_range)
         if _stop.is_set():
             return
-
-        completed_ext, _word = _tell_and_fill(extension)
-        full = (prior + "\n\n" + completed_ext).strip()
-        with _lock:
-            parts = _state["parts"] + 1
-        _set(story=full, parts=parts)
-        if _stop.is_set():
-            return
-
-        _spell_word(full)
-        _audio.speak(generate_line(_client, "continue_prompt", _age_range))
-        _set(phase="ready", message="Tap Continue for more, or Stop to finish.")
+        _story_loop(part)
     except Exception as exc:  # noqa: BLE001
         logger.exception("story extension failed")
         _set(phase="error", error=str(exc))
