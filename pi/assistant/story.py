@@ -345,8 +345,11 @@ def pick_story_word(
                         "From the story below, choose ONE word for the child "
                         "to spell. It must be important and meaningful to the "
                         "story — a character, place, animal, or key object — "
-                        f"and simple and short, {_word_length(age_range)} letters, "
-                        "easy for a young child." + avoid + " Reply with ONLY "
+                        "and easy for a young child. Prefer a shorter word, "
+                        f"about {_word_length(age_range)} letters, but it must be "
+                        "a complete real word written exactly as it appears in "
+                        "the story. Never shorten, cut or change a word." + avoid
+                        + " Reply with ONLY "
                         "that single "
                         f"word.\n\n{story_so_far}"
                     ),
@@ -355,8 +358,14 @@ def pick_story_word(
             max_tokens=10,
         )
         tokens = re.findall(r"[A-Za-z]+", resp.choices[0].message.content or "")
+        story_words = {w.lower() for w in re.findall(r"[A-Za-z]+", story_so_far)}
         if tokens and tokens[0].lower() not in exclude:
-            return tokens[0].lower()
+            word = tokens[0].lower()
+            # The word must be a whole word from the story, never a trimmed one
+            # such as "boog" for "booger".
+            if word in story_words:
+                return word
+            logger.info("pick_story_word: %r is not a word of the story; using fallback", word)
     except Exception as exc:  # noqa: BLE001
         logger.warning("pick_story_word failed (%s); using fallback", exc)
     return pick_spelling_word(story_so_far, exclude)
@@ -508,7 +517,8 @@ def pick_practice_word(client, age_range: str | None = None, exclude: set[str] |
                     "role": "user",
                     "content": (
                         "Give ONE simple, friendly English word that a young child "
-                        f"knows, {_word_length(age_range)} letters long: an animal, "
+                        f"knows, about {_word_length(age_range)} letters long, a "
+                        "complete real word and never a shortened one: an animal, "
                         "a food, a toy or something at home or outside. Only "
                         "letters A to Z."
                         + (" Do NOT use: " + ", ".join(sorted(exclude)) + "." if exclude else "")
