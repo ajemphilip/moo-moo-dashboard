@@ -116,6 +116,9 @@ export default function DashboardPage() {
         <Button href="/story" variant="secondary">
           Story time
         </Button>
+        <Button href="/games" variant="secondary">
+          Word games
+        </Button>
       </div>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}

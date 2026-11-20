@@ -162,6 +162,34 @@ class ButtonCheckState(BaseModel):
     recent: list[ButtonPress] = []
 
 
+# --- Word games on their own ---------------------------------------------------
+
+
+class GameStartRequest(BaseModel):
+    game: Literal["spell", "name", "build", "mix"] = "mix"
+
+
+class GameState(BaseModel):
+    active: bool
+    dry_run: bool = False
+    # The game chosen on the phone: spell | name | build | mix
+    game: Optional[str] = None
+    # idle | telling | thinking | quiz | listening | spelling | done | error
+    phase: str = "idle"
+    message: Optional[str] = None
+    rounds: int = 0
+    spelling_word: Optional[str] = None
+    game_mode: Optional[str] = None
+    build_raised: list[int] = []
+    build_target: list[int] = []
+    spell_letter: Optional[str] = None
+    spell_index: Optional[int] = None
+    spell_total: Optional[int] = None
+    spell_dots_left: Optional[int] = None
+    spell_awaiting: bool = False
+    error: Optional[str] = None
+
+
 # --- Letter-practice exercise -------------------------------------------------
 
 

@@ -135,6 +135,27 @@ export interface ButtonCheckState {
   recent: { button: number; seconds_ago: number }[];
 }
 
+export type GameKind = "spell" | "name" | "build" | "mix";
+
+export interface GameState {
+  active: boolean;
+  dry_run: boolean;
+  game: GameKind | null;
+  phase: string;
+  message: string | null;
+  rounds: number;
+  spelling_word: string | null;
+  game_mode?: "spell" | "name" | "build" | null;
+  build_raised?: number[];
+  build_target?: number[];
+  spell_letter: string | null;
+  spell_index: number | null;
+  spell_total: number | null;
+  spell_dots_left: number | null;
+  spell_awaiting: boolean;
+  error: string | null;
+}
+
 export interface StoryState {
   active: boolean;
   dry_run: boolean;
@@ -225,6 +246,13 @@ export const api = {
   buttonsState: () => request<ButtonCheckState>("/braille/buttons/state"),
   buttonsStop: () =>
     request<{ status: string }>("/braille/buttons/stop", { method: "POST", body: "{}" }),
+
+  // Word games on their own
+  gamesStart: (game: GameKind) =>
+    request<GameState>("/games/start", { method: "POST", body: JSON.stringify({ game }) }),
+  gamesState: () => request<GameState>("/games/state"),
+  gamesStop: () =>
+    request<{ status: string }>("/games/stop", { method: "POST", body: "{}" }),
 
   // Letter-practice exercise
   lettersStart: () =>

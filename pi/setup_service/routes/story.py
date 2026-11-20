@@ -29,26 +29,16 @@ import config as moo_config
 from assistant.braille_letters import dots_for
 
 from ..models import SimpleStatus, StoryState
+from .. import word_games
 from ..services import braille_hw, service_control
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/story")
 
 _OWNER = "story"
-# A letter stays raised until the child lowers every one of its dots. This
-# generous cap is only a failsafe so a broken button can't stall forever.
-SPELL_LETTER_TIMEOUT = 120.0
 
-_SPELL_FIELDS = dict(
-    game_mode=None,
-    build_raised=[],
-    build_target=[],
-    spell_letter=None,
-    spell_index=None,
-    spell_total=None,
-    spell_dots_left=None,
-    spell_awaiting=False,
-)
+_SPELL_FIELDS = word_games.GAME_FIELDS
+_game_session: word_games.Session | None = None
 
 _lock = threading.Lock()
 _state: dict = {
@@ -146,284 +136,25 @@ def _tell(part_text: str) -> str:
     return text
 
 
-# --- Word games ----------------------------------------------------------------
-# After each part Moo plays one game with a word from that part. The mix keeps
-# it from turning into pressing only: spelling the word, reading one letter,
-# or a riddle after which the child builds a letter by raising its dots.
+# --- Word games (setup_service/word_games.py) ---------------------------------
 
-_GAME_WEIGHTS = {
-    "0-3": {"spell": 0.6, "name": 0.4, "build": 0.0},
-    "3-5": {"spell": 0.4, "name": 0.35, "build": 0.25},
-    "5-8": {"spell": 0.34, "name": 0.33, "build": 0.33},
-}
-_last_game: str | None = None
-BUILD_TIMEOUT = 90.0      # seconds before Moo shows the letter
-BUILD_HINT_AFTER = 45.0   # seconds before Moo lets the child feel the letter
-
-
-def _pick_game() -> str:
-    global _last_game
-    weights = dict(_GAME_WEIGHTS.get(_age_range, _GAME_WEIGHTS["3-5"]))
-    # Avoid the same game twice in a row when another one is possible.
-    if _last_game and sum(v for k, v in weights.items() if k != _last_game) > 0:
-        weights[_last_game] = 0.0
-    games = [g for g, w in weights.items() if w > 0]
-    game = random.choices(games, weights=[weights[g] for g in games])[0]
-    _last_game = game
-    return game
-
-
-def _pick_word(text: str) -> str:
-    from assistant.story import pick_spelling_word, pick_story_word
-
-    word = pick_story_word(_client, text, _age_range, exclude=_spelled_words)
-    if not [c for c in word if c.isalpha()]:
-        word = pick_spelling_word(text, _spelled_words)
-    _spelled_words.add(word.lower())
-    return word
+def _session() -> word_games.Session:
+    global _game_session
+    if _game_session is None:
+        _game_session = word_games.Session(
+            client=_client, audio=_audio, age_range=_age_range, set=_set,
+            stop=_stop, owner=_OWNER, used_words=_spelled_words,
+        )
+    return _game_session
 
 
 def _word_game(part_text: str) -> None:
-    word = _pick_word(part_text)
-    game = _pick_game()
-    logger.info("word game: %s with %r", game, word)
-    if game == "name":
-        _name_letter(word)
-    elif game == "build":
-        _build_letter(word)
-    else:
-        _spell_word(word)
-    _set(**_SPELL_FIELDS)
-
-
-def _spell_word(word: str) -> None:
-    """Spell `word` one letter at a time.
-
-    Each letter is raised and stays up. The child feels it and presses a
-    button for each raised dot to lower it; only when EVERY dot of the letter
-    is down does spelling move on. A press on a dot that is not part of the
-    letter gets one gentle hint per letter. A generous cap moves on anyway if
-    a dot can never be cleared.
-    """
-    from assistant.story import generate_line
-
-    letters = [c for c in word.upper() if c.isalpha()]
-    _set(
-        phase="spelling",
-        game_mode="spell",
-        message=f"Let's spell: {word}",
-        spelling_word=word,
-        spell_total=len(letters),
-    )
-    opener = generate_line(_client, "spell_intro", _age_range, word=word)
-    _audio.speak(
-        f"{opener} Feel each letter, then press a button for every raised "
-        "dot to clear it."
-    )
-    driver = braille_hw.acquire(_OWNER)
-
-    for i, ch in enumerate(letters):
-        if _stop.is_set():
-            break
-        dots = set(dots_for(ch))
-        _set(
-            spell_letter=ch,
-            spell_index=i,
-            spell_dots_left=len(dots),
-            spell_awaiting=False,
-            message=f"Letter {ch} — press every raised dot to clear it",
-        )
-        # Drop presses left over from the previous letter BEFORE this one is
-        # announced, so a press made while Moo speaks or the dots rise counts.
-        try:
-            driver.pop_presses()
-        except Exception:
-            pass
-        _audio.speak(f"The letter {ch}.")
-        driver.render_letter(ch)
-
-        cleared: set[int] = set()
-        hinted = False
-        _set(spell_awaiting=True)
-        deadline = time.time() + SPELL_LETTER_TIMEOUT
-        while cleared != dots and not _stop.is_set() and time.time() < deadline:
-            try:
-                presses = driver.pop_presses()
-            except Exception:
-                presses = []
-            for pressed, _t in presses:
-                if pressed in dots and pressed not in cleared:
-                    cleared.add(pressed)
-                    _set(spell_dots_left=len(dots - cleared))
-                elif pressed not in dots:
-                    logger.info("spelling %s: press on dot %d, not in the letter", ch, pressed)
-                    if not hinted:
-                        hinted = True
-                        _audio.speak("That dot is already down. Feel for a raised one.")
-            time.sleep(0.08)
-        _set(spell_awaiting=False)
-        if cleared == dots and not _stop.is_set():
-            _audio.play_cue("done")
-
-    try:
-        driver.reset_cell()
-    except Exception:
-        pass
-    if not _stop.is_set():
-        _audio.speak(f"You spelled {word}!")
+    ctx = _session()
+    word_games.word_game(ctx, part_text)
 
 
 def _hear() -> str:
     return (_audio.transcribe(_audio.record_until_silence()) or "").strip()
-
-
-def _name_letter(word: str) -> None:
-    """Raise one letter of `word` and ask the child to say which letter it is."""
-    from assistant.story import check_letter, generate_line
-
-    letters = [c for c in word.upper() if c.isalpha()]
-    ch = letters[0] if _age_range == "0-3" else random.choice(letters)
-    _set(
-        phase="spelling",
-        game_mode="name",
-        spelling_word=word,
-        spell_letter=ch,
-        spell_total=len(letters),
-        spell_index=letters.index(ch),
-        message="Which letter is this? Feel the dots and say it out loud.",
-    )
-    _audio.speak(generate_line(_client, "letter_intro", _age_range, word=word))
-    driver = braille_hw.acquire(_OWNER)
-    driver.render_letter(ch)
-    time.sleep(1.6)  # let the dots rise before asking
-    question = "Feel the dots. Which letter is it?"
-    for attempt in range(2):
-        if _stop.is_set():
-            break
-        _audio.speak(question)
-        _set(phase="listening", message=question)
-        heard = _hear()
-        logger.info("letter game %s: heard %r", ch, heard)
-        _set(phase="spelling")
-        if check_letter(_client, ch, heard):
-            _audio.play_cue("done")
-            _audio.speak(f"Yes! That is the letter {ch}, from our word {word}!")
-            break
-        if attempt == 0:
-            question = "Good try! Feel it once more. Which letter is it?"
-        else:
-            _audio.speak(
-                f"This one is the letter {ch}, like in {word}. Feel it now that you know it."
-            )
-            time.sleep(3.0)
-    try:
-        driver.reset_cell()
-    except Exception:
-        pass
-
-
-def _build_letter(word: str) -> None:
-    """A riddle about `word`, then the child raises the dots of its first letter.
-
-    All dots start down. Pressing a dot raises it, pressing it again lowers
-    it. When exactly the dots of the letter are up, the letter is made.
-    """
-    from assistant.story import check_guess, generate_line, make_riddle
-
-    letters = [c for c in word.upper() if c.isalpha()]
-    ch = letters[0]
-    dots = set(dots_for(ch))
-    driver = braille_hw.acquire(_OWNER)
-    try:
-        driver.reset_cell()
-    except Exception:
-        pass
-
-    _set(phase="quiz", game_mode="build", spelling_word=word, spell_letter=None,
-         message="A riddle!")
-    riddle = make_riddle(_client, word, _age_range)
-    _audio.speak(generate_line(_client, "riddle_intro", _age_range))
-    _set(message=riddle)
-    _audio.speak(riddle)
-    if _stop.is_set():
-        return
-    _set(phase="listening", message=riddle)
-    heard = _hear()
-    logger.info("riddle %r: heard %r", word, heard)
-    if check_guess(_client, word, heard):
-        _audio.speak(f"Yes, it is {word}!")
-    else:
-        _audio.speak(f"Good guess! The answer is {word}.")
-    if _stop.is_set():
-        return
-
-    _set(phase="spelling", spell_letter=ch, build_raised=[], build_target=sorted(dots),
-         message=f"Make the letter {ch}: press its dots to raise them")
-    _audio.speak(
-        f"{word} starts with the letter {ch}. Can you make the letter {ch}? "
-        "Press a dot to raise it, and press it again to lower it."
-    )
-    driver.lower_on_press = False
-    raised: set[int] = set()
-    last_toggle = [0.0] * 6
-    last_motor = 0.0
-    hinted_wrong: set[int] = set()
-    hint_given = False
-    started = time.time()
-    made = False
-    try:
-        driver.pop_presses()
-        while not _stop.is_set() and time.time() - started < BUILD_TIMEOUT:
-            for b, t in driver.pop_presses():
-                if not 0 <= b < 6:
-                    continue
-                # Motor current can glitch the button lines. Ignore a press
-                # right after a motor started, and a repeat of the same dot
-                # within 0.8 s.
-                if t - last_motor < 0.15 or t - last_toggle[b] < 0.8:
-                    continue
-                last_toggle[b] = t
-                last_motor = time.monotonic()
-                if b in raised:
-                    driver.lower_motor(b)
-                    raised.discard(b)
-                else:
-                    driver.raise_motor(b)
-                    raised.add(b)
-                _set(build_raised=sorted(raised))
-                if b in raised and b not in dots and b not in hinted_wrong:
-                    hinted_wrong.add(b)
-                    _audio.speak(f"That dot is not part of {ch}. Press it again to lower it.")
-            if raised == dots:
-                made = True
-                break
-            if not hint_given and time.time() - started > BUILD_HINT_AFTER:
-                hint_given = True
-                _audio.speak(f"Here is a hint. Feel the letter {ch}.")
-                driver.render_letter(ch)
-                time.sleep(4.0)
-                driver.reset_cell()
-                raised = set()
-                _set(build_raised=[])
-                driver.pop_presses()
-                _audio.speak("Now you try. Press the dots to make it.")
-            time.sleep(0.08)
-        if _stop.is_set():
-            return
-        if made:
-            _audio.play_cue("done")
-            _audio.speak(f"You made the letter {ch}! Wonderful!")
-            time.sleep(1.5)
-        else:
-            _audio.speak(f"This is the letter {ch}. Feel it.")
-            driver.render_letter(ch)
-            time.sleep(3.0)
-    finally:
-        driver.lower_on_press = True
-        try:
-            driver.reset_cell()
-        except Exception:
-            pass
 
 
 # --- The round: tell, play, ask -------------------------------------------------
@@ -557,6 +288,8 @@ def story_start() -> StoryState:
     _steer_question = ""
     _steer_answer = ""
     _spelled_words.clear()
+    global _game_session
+    _game_session = None
 
     cfg = moo_config.load_config()
     api_key = cfg.get("openai_api_key")

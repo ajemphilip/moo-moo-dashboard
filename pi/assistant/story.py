@@ -488,6 +488,46 @@ def _yes_no(client, instruction: str) -> bool | None:
         return None
 
 
+_PRACTICE_WORDS = {
+    "short": ["cat", "dog", "sun", "cow", "hat", "bed", "cup", "egg", "bus", "pig",
+              "moon", "fish", "cake", "duck", "frog", "milk", "star", "boat", "tree", "ball"],
+    "long": ["apple", "horse", "snail", "train", "cloud", "bread", "sheep", "flower",
+             "rabbit", "garden", "candle", "pocket", "turtle", "basket", "banana", "rocket"],
+}
+
+
+def pick_practice_word(client, age_range: str | None = None, exclude: set[str] | None = None) -> str:
+    """One simple, friendly word for the word games outside a story."""
+    exclude = {w.lower() for w in (exclude or set())}
+    try:
+        resp = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": _system_prompt(age_range)},
+                {
+                    "role": "user",
+                    "content": (
+                        "Give ONE simple, friendly English word that a young child "
+                        f"knows, {_word_length(age_range)} letters long: an animal, "
+                        "a food, a toy or something at home or outside. Only "
+                        "letters A to Z."
+                        + (" Do NOT use: " + ", ".join(sorted(exclude)) + "." if exclude else "")
+                        + " Reply with ONLY the word."
+                    ),
+                },
+            ],
+            max_tokens=8,
+        )
+        tokens = re.findall(r"[A-Za-z]+", resp.choices[0].message.content or "")
+        if tokens and tokens[0].lower() not in exclude:
+            return tokens[0].lower()
+    except Exception:
+        logger.warning("pick_practice_word failed; using the word list", exc_info=True)
+    pool = _PRACTICE_WORDS["short" if age_range in ("0-3", "3-5") else "long"]
+    left = [w for w in pool if w not in exclude] or pool
+    return random.choice(left)
+
+
 def check_letter(client, letter: str, heard: str) -> bool:
     """Did the child name `letter`? Speech recognition often writes a letter
     as its name or a sound-alike (B as 'bee', S as 'ess' or 'yes')."""

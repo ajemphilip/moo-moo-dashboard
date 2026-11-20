@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from .routes import audio as audio_routes
 from .routes import braille as braille_routes
 from .routes import config as config_routes
+from .routes import games as games_routes
 from .routes import letters as letters_routes
 from .routes import status as status_routes
 from .routes import story as story_routes
@@ -57,6 +58,7 @@ app.include_router(braille_routes.router)
 app.include_router(audio_routes.router)
 app.include_router(letters_routes.router)
 app.include_router(story_routes.router)
+app.include_router(games_routes.router)
 
 
 @app.get("/healthz")
