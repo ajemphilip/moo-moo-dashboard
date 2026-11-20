@@ -233,13 +233,13 @@ def name_letter(ctx, word: str) -> None:
             ctx.set(phase="spelling")
             if check_letter(ctx.client, ch, heard):
                 ctx.audio.play_cue("done")
-                ctx.audio.speak(f"Yes! That is the letter {ch}, from our word {word}!")
+                ctx.audio.speak(f"{random.choice(_CHEERS)} It's {ch}! {_like_in(ch, word)}")
                 break
             if attempt == 0:
                 question = "Good try! Feel it once more. Which letter is it?"
             else:
                 ctx.audio.speak(
-                    f"This one is the letter {ch}, like in {word}. Feel it now that you know it."
+                    f"This one is {ch}! {_like_in(ch, word)} Feel it now that you know it."
                 )
                 time.sleep(3.0)
         if ctx.stop.is_set():
@@ -258,6 +258,26 @@ def name_letter(ctx, word: str) -> None:
             driver.reset_cell()
         except Exception:
             pass
+
+
+_CHEERS = ("Yes!", "You got it!", "Wow, well done!", "Amazing!", "That's right!")
+
+# One easy word for every letter, so Moo can give a second example.
+_EXAMPLES = {
+    "A": "apple", "B": "ball", "C": "cat", "D": "dog", "E": "elephant", "F": "fish",
+    "G": "goat", "H": "hat", "I": "igloo", "J": "jam", "K": "kite", "L": "lion",
+    "M": "moon", "N": "nest", "O": "octopus", "P": "pig", "Q": "queen", "R": "rabbit",
+    "S": "sun", "T": "tree", "U": "umbrella", "V": "van", "W": "whale", "X": "fox",
+    "Y": "yo-yo", "Z": "zebra",
+}
+
+
+def _like_in(ch: str, word: str) -> str:
+    """'Like in egg, or in elephant!' — the game word and one more example."""
+    other = _EXAMPLES.get(ch.upper(), "")
+    if other and other.lower() != word.lower():
+        return f"Like in {word}, or in {other}!"
+    return f"Like in {word}!"
 
 
 def _clear_letter(ctx, driver, ch: str) -> bool:
