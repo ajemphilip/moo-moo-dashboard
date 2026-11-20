@@ -156,6 +156,11 @@ def _hear() -> str:
 
 _END_WORDS = {"stop", "finish", "finished", "done", "enough", "bye", "goodbye"}
 
+_NEXT_QUESTIONS = (
+    "What should happen next? Or say: the end.",
+    "What happens next? You can also say: the end.",
+)
+
 
 def _wants_end(heard: str) -> bool:
     words = re.findall(r"[a-z]+", heard.lower())
@@ -172,7 +177,10 @@ def _ask_next() -> str | None:
     global _steer_question, _steer_answer
     from assistant.story import check_answer, generate_line
 
-    question = generate_line(_client, "next_prompt", _age_range)
+    # A fixed, short question every round. A generated one ran on into more
+    # story ("She was bursting with ideas! What fun surprise...") and changed
+    # every time; the same words each round are easier for a child to learn.
+    question = random.choice(_NEXT_QUESTIONS)
     heard = ""
     for attempt in range(2):
         if _stop.is_set():
