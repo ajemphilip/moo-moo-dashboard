@@ -213,7 +213,8 @@ def name_letter(ctx, word: str) -> None:
         spell_index=letters.index(ch),
         message="Which letter is this? Feel the dots and say it out loud.",
     )
-    ctx.audio.speak(generate_line(ctx.client, "letter_intro", ctx.age_range, word=word))
+    # Fixed words: a generated intro named the letter before the child felt it.
+    ctx.audio.speak("Here is a letter. Feel it, and tell me which letter it is.")
     driver = braille_hw.acquire(ctx.owner)
     driver.render_letter(ch)
     time.sleep(1.6)  # let the dots rise before asking
