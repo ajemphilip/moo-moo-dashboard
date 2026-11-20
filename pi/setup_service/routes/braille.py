@@ -230,8 +230,10 @@ def buttons_start() -> ButtonCheckState:
 
 @router.get("/buttons/state", response_model=ButtonCheckState)
 def buttons_state() -> ButtonCheckState:
+    global _btn_active
     with _btn_lock:
         if not _btn_active or braille_hw.owner() != _BTN_OWNER:
+            _btn_active = False
             return ButtonCheckState(active=False)
         driver = braille_hw.acquire(_BTN_OWNER)
         _btn_collect(driver)

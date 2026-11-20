@@ -23,6 +23,10 @@ _lock = threading.Lock()
 _driver = None  # GpioBrailleDriver | None
 _owner: str | None = None
 
+# Sessions that give the cell up when another one asks for it. The button
+# check is a diagnostic and can be left open by accident.
+YIELDING_OWNERS = {"buttons"}
+
 
 def acquire(owner: str):
     """Return the shared driver, creating it for `owner` if free.
@@ -33,6 +37,16 @@ def acquire(owner: str):
     from assistant.braille import make_driver
 
     with _lock:
+        if _driver is not None and _owner != owner and _owner in YIELDING_OWNERS:
+            # A button check left open (phone locked, tab closed) must never
+            # block a story or letter practice. Hand the cell over.
+            logger.info("braille hardware taken from %s by %s", _owner, owner)
+            try:
+                _driver.close()
+            except Exception:
+                logger.warning("braille driver close raised", exc_info=True)
+            _driver = None
+            _owner = None
         if _driver is not None and _owner != owner:
             raise RuntimeError(f"Braille hardware is busy ({_owner} session)")
         if _driver is None:
