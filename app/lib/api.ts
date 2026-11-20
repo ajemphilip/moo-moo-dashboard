@@ -136,7 +136,7 @@ export interface ButtonCheckState {
 }
 
 export interface AiSettings {
-  mode: "cloud" | "local";
+  mode: "cloud" | "local" | "browser";
   local_url: string | null;
   local_name: string | null;
   has_openai_key: boolean;
@@ -273,13 +273,17 @@ export const api = {
 
   // AI engine: cloud (OpenAI) or Moo Local on a computer
   aiGet: () => request<AiSettings>("/ai"),
-  aiSet: (mode: "cloud" | "local", local_url?: string, local_name?: string) =>
+  aiSet: (mode: "cloud" | "local" | "browser", local_url?: string, local_name?: string) =>
     request<AiSettings>("/ai", {
       method: "POST",
       body: JSON.stringify({ mode, local_url, local_name }),
     }),
   aiDiscover: () => request<{ engines: AiEngine[] }>("/ai/discover"),
   aiTest: () => request<AiTest>("/ai/test", { method: "POST", body: "{}" }),
+  engineStatus: () =>
+    request<{ devices: { name: string; jobs_done: number; seconds_since_seen: number }[]; queued: number }>(
+      "/engine/status"
+    ),
 
   // Word games on their own
   gamesStart: (game: GameKind) =>

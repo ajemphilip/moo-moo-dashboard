@@ -110,10 +110,15 @@ export default function DashboardPage() {
         <p className="text-sm text-moo-ink/70">
           {ai.data?.mode === "local"
             ? `Local — ${ai.data.local_name ?? "a computer on your network"}. No internet or key needed.`
-            : "Cloud — OpenAI, with your key."}
+            : ai.data?.mode === "browser"
+              ? "A lent phone or laptop does the work in its browser."
+              : "Cloud — OpenAI, with your key."}
         </p>
         <Button href="/ai" variant="secondary" className="mt-1">
           Choose cloud or local
+        </Button>
+        <Button href="/lend" variant="secondary">
+          Lend this device to Moo
         </Button>
       </div>
 

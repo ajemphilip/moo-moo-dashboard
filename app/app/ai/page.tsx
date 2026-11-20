@@ -37,7 +37,15 @@ function AiPageInner() {
     search();
   }, []);
 
-  const choose = async (mode: "cloud" | "local", engine?: AiEngine) => {
+  const [lent, setLent] = useState<{ name: string; jobs_done: number }[]>([]);
+  useEffect(() => {
+    const tick = () => api.engineStatus().then((s) => setLent(s.devices)).catch(() => {});
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  const choose = async (mode: "cloud" | "local" | "browser", engine?: AiEngine) => {
     setBusy(true);
     setError(null);
     setTest(null);
@@ -66,6 +74,9 @@ function AiPageInner() {
   };
 
   const local = settings?.mode === "local";
+  const browser = settings?.mode === "browser";
+  const secureLend =
+    typeof window !== "undefined" ? `https://${window.location.hostname}:8443/lend/` : "/lend/";
 
   return (
     <StepLayout
@@ -79,7 +90,7 @@ function AiPageInner() {
         disabled={busy || !settings?.has_openai_key}
         onClick={() => choose("cloud")}
         className={`moo-card text-left flex flex-col gap-1 border-2 transition disabled:opacity-50 ${
-          !local && settings ? "border-moo-accent" : "border-transparent"
+          !local && !browser && settings ? "border-moo-accent" : "border-transparent"
         }`}
       >
         <span className="font-semibold">Cloud — OpenAI</span>
@@ -130,6 +141,30 @@ function AiPageInner() {
         <button type="button" onClick={search} disabled={searching} className="text-sm text-moo-accent underline self-start">
           Search again
         </button>
+      </div>
+
+      {/* A lent phone or laptop */}
+      <div
+        className={`moo-card flex flex-col gap-2 border-2 ${
+          browser ? "border-moo-accent" : "border-transparent"
+        }`}
+      >
+        <span className="font-semibold">A phone or laptop — lend it to Moo</span>
+        <span className="text-sm text-moo-ink/70">
+          Any newer phone or computer does the work in its web browser. Open the Lend page on it,
+          keep it open, and Moo uses it. Nothing to install, no key, free.
+        </span>
+        <p className="text-sm">
+          {lent.length > 0
+            ? `Lent right now: ${lent.map((d) => d.name).join(", ")}`
+            : "No device is lent right now."}
+        </p>
+        <a href={secureLend} className="text-sm text-moo-accent underline self-start">
+          Open the Lend page on this device
+        </a>
+        <Button variant="secondary" onClick={() => choose("browser")} disabled={busy}>
+          {browser ? "In use" : "Use a lent device"}
+        </Button>
       </div>
 
       {settings?.ready && (

@@ -144,11 +144,33 @@ class CalibrationSaveRequest(BaseModel):
     button_pins: list[int] = Field(min_length=6, max_length=6)
 
 
+# --- Lend a device -------------------------------------------------------------
+
+
+class EngineHello(BaseModel):
+    name: str = "A browser"
+    device: str = ""
+
+
+class EngineResult(BaseModel):
+    engine_id: str = ""
+    job_id: str
+    ok: bool
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class EngineSubmit(BaseModel):
+    kind: Literal["chat", "transcribe", "speak", "moderate"]
+    payload: dict = {}
+    timeout: float = 120.0
+
+
 # --- AI engine ----------------------------------------------------------------
 
 
 class AiSettings(BaseModel):
-    mode: Literal["cloud", "local"] = "cloud"
+    mode: Literal["cloud", "local", "browser"] = "cloud"
     local_url: Optional[str] = None
     local_name: Optional[str] = None
     has_openai_key: bool = False
@@ -156,7 +178,7 @@ class AiSettings(BaseModel):
 
 
 class AiUpdateRequest(BaseModel):
-    mode: Literal["cloud", "local"]
+    mode: Literal["cloud", "local", "browser"]
     local_url: Optional[str] = None
     local_name: Optional[str] = None
 

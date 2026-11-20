@@ -20,6 +20,8 @@ from .routes import ai as ai_routes
 from .routes import audio as audio_routes
 from .routes import braille as braille_routes
 from .routes import config as config_routes
+from .routes import devicecheck as devicecheck_routes
+from .routes import engine as engine_routes
 from .routes import games as games_routes
 from .routes import letters as letters_routes
 from .routes import status as status_routes
@@ -61,6 +63,8 @@ app.include_router(letters_routes.router)
 app.include_router(story_routes.router)
 app.include_router(games_routes.router)
 app.include_router(ai_routes.router)
+app.include_router(devicecheck_routes.router)
+app.include_router(engine_routes.router)
 
 
 @app.get("/healthz")

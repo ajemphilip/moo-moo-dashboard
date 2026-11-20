@@ -50,7 +50,8 @@ def _system_prompt(age_range: str | None, strict: bool = False) -> str:
         "part all the way through without stopping in the middle, and end it "
         "at a natural moment where the story could go on. End the part with "
         "a statement, never with a question to the child — Moo asks what "
-        "happens next separately."
+        "happens next separately. Reply with only the words Moo reads aloud: "
+        "no title, no introduction such as 'Here is the story', no notes."
     )
     if strict:
         base += (
