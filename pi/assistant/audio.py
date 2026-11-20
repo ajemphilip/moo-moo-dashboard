@@ -188,9 +188,9 @@ class AudioIO:
 
     def record_until_silence(
         self,
-        max_seconds: float = 15.0,
-        silence_seconds: float = 1.8,
-        start_timeout: float = 8.0,
+        max_seconds: float = 30.0,
+        silence_seconds: float = 3.0,
+        start_timeout: float = 12.0,
     ) -> bytes:
         """Cue the child, capture until they stop talking, then cue again.
 

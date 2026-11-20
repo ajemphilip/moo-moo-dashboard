@@ -1,7 +1,8 @@
 """Storytelling session endpoints.
 
 POST /story/start    — begin a session: Moo greets, asks for a theme by voice,
-                       writes a 20-30s story, reads it, then spells a noun on
+                       writes a short story of about 15 s, reads it
+                       through, asks what happens next, then spells a noun on
                        the Braille cell.
 POST /story/continue — Moo asks what happens next, records the answer, and
                        extends the SAME story coherently, then spells again.
