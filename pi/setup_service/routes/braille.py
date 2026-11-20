@@ -6,6 +6,9 @@ POST /braille/calibrate/pulse    — pulse one motor during calibration
 GET  /braille/calibrate/button   — report the last button press (for mapping)
 POST /braille/calibrate/save     — write calibrated pin map to config, close session
 POST /braille/calibrate/stop     — close the session without saving
+POST /braille/buttons/start      — start the button check (counts every press)
+GET  /braille/buttons/state      — presses per button and the latest presses
+POST /braille/buttons/stop       — end the button check
 
 A calibration session holds one GpioBrailleDriver alive (module-level) so the
 buttons keep firing events while the wizard polls. The assistant is paused for
@@ -24,6 +27,8 @@ import config as moo_config
 
 from ..models import (
     BrailleTestRequest,
+    ButtonCheckState,
+    ButtonPress,
     BrailleTestResponse,
     CalibrateButtonResponse,
     CalibrateStartResponse,
@@ -31,7 +36,7 @@ from ..models import (
     MotorPulseRequest,
     SimpleStatus,
 )
-from ..services import service_control
+from ..services import braille_hw, service_control
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/braille")
@@ -170,3 +175,78 @@ def _close_calib_driver() -> None:
         except Exception:
             logger.warning("calib driver close raised", exc_info=True)
         _calib_driver = None
+
+
+# --- Button check --------------------------------------------------------------
+# Counts every press on every button, so a button that misses clicks or
+# double-clicks shows up. Motors are NOT lowered on a press during the check.
+
+_BTN_OWNER = "buttons"
+_btn_lock = threading.Lock()
+_btn_active = False
+_btn_counts = [0] * 6
+_btn_recent: list[tuple[int, float]] = []  # (button, monotonic time), newest first
+_btn_last: int | None = None
+
+
+def _btn_collect(driver) -> None:
+    """Move new presses from the driver into the check's tally. Hold _btn_lock."""
+    global _btn_last
+    for button, t in driver.pop_presses():
+        if 0 <= button < 6:
+            _btn_counts[button] += 1
+        _btn_last = button
+        _btn_recent.insert(0, (button, t))
+    del _btn_recent[12:]
+
+
+def _btn_state(dry_run: bool) -> ButtonCheckState:
+    now = time.monotonic()
+    return ButtonCheckState(
+        active=_btn_active,
+        dry_run=dry_run,
+        counts=list(_btn_counts),
+        last=_btn_last,
+        recent=[ButtonPress(button=b, seconds_ago=round(now - t, 1)) for b, t in _btn_recent],
+    )
+
+
+@router.post("/buttons/start", response_model=ButtonCheckState)
+def buttons_start() -> ButtonCheckState:
+    global _btn_active, _btn_last
+    with _btn_lock:
+        try:
+            driver = braille_hw.acquire(_BTN_OWNER)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        driver.lower_on_press = False
+        driver.pop_presses()
+        _btn_counts[:] = [0] * 6
+        _btn_recent.clear()
+        _btn_last = None
+        _btn_active = True
+        return _btn_state(getattr(driver, "dry_run", False))
+
+
+@router.get("/buttons/state", response_model=ButtonCheckState)
+def buttons_state() -> ButtonCheckState:
+    with _btn_lock:
+        if not _btn_active or braille_hw.owner() != _BTN_OWNER:
+            return ButtonCheckState(active=False)
+        driver = braille_hw.acquire(_BTN_OWNER)
+        _btn_collect(driver)
+        return _btn_state(getattr(driver, "dry_run", False))
+
+
+@router.post("/buttons/stop", response_model=SimpleStatus)
+def buttons_stop() -> SimpleStatus:
+    global _btn_active
+    with _btn_lock:
+        _btn_active = False
+        if braille_hw.owner() == _BTN_OWNER:
+            try:
+                braille_hw.acquire(_BTN_OWNER).lower_on_press = True
+            except Exception:
+                pass
+        braille_hw.release(_BTN_OWNER)
+    return SimpleStatus(status="stopped")

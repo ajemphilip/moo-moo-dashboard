@@ -99,15 +99,15 @@ export default function StoryPage() {
             <strong>chime</strong>, your child answers <strong>out loud</strong>.
           </p>
           <p className="text-sm text-moo-ink/70">
-            Every part of the story has <strong>one missing word</strong>. Moo
-            reads up to the gap and plays a chime — that&apos;s the signal for
-            your child to <strong>say a word out loud</strong>. Their word drops
-            straight into the story, and Moo reads on with it.
+            Moo tells a <strong>short part</strong> of the story, then asks
+            <strong> what happens next</strong>. After the chime your child
+            answers out loud and can take their time — Moo waits until they
+            stop talking, repeats back what it heard, and asks again if it
+            didn&apos;t catch a usable answer.
           </p>
           <p className="text-sm text-moo-ink/70">
-            That word is then spelled on the Braille cell. Tap{" "}
-            <strong>Continue</strong> and the story grows from the word your
-            child chose.
+            A word from the story is then spelled on the Braille cell, and
+            the next part grows from your child&apos;s idea.
           </p>
         </div>
         {error && <p className="text-red-600 text-sm">{error}</p>}

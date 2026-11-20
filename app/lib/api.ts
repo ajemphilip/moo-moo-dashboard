@@ -127,6 +127,14 @@ export interface LetterState {
   repeats: number;
 }
 
+export interface ButtonCheckState {
+  active: boolean;
+  dry_run: boolean;
+  counts: number[];
+  last: number | null;
+  recent: { button: number; seconds_ago: number }[];
+}
+
 export interface StoryState {
   active: boolean;
   dry_run: boolean;
@@ -207,6 +215,13 @@ export const api = {
     }),
   calibrateStop: () =>
     request<{ status: string }>("/braille/calibrate/stop", { method: "POST", body: "{}" }),
+
+  // Button check
+  buttonsStart: () =>
+    request<ButtonCheckState>("/braille/buttons/start", { method: "POST", body: "{}" }),
+  buttonsState: () => request<ButtonCheckState>("/braille/buttons/state"),
+  buttonsStop: () =>
+    request<{ status: string }>("/braille/buttons/stop", { method: "POST", body: "{}" }),
 
   // Letter-practice exercise
   lettersStart: () =>

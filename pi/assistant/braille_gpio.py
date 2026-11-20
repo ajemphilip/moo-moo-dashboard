@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from .braille_letters import dots_for
@@ -107,6 +108,13 @@ class GpioBrailleDriver:
         self._stby = None       # gpiozero OutputDevice — TB6612 enable
         self._last_button: int | None = None
         self._button_lock = threading.Lock()
+        # Every press in order, so two quick presses are never collapsed into
+        # one. Read with pop_presses(); pop_last_button() is kept for the
+        # calibration wizard, which only needs the most recent press.
+        self._presses: deque[tuple[int, float]] = deque(maxlen=64)
+        # The button check turns this off so pressing a button that is
+        # already down does not drive its motor against the end stop.
+        self.lower_on_press = True
 
         if self.dry_run:
             logger.info("GpioBrailleDriver running in dry-run mode")
@@ -233,9 +241,13 @@ class GpioBrailleDriver:
         feedback loop. Only one button-driven lowering per motor per
         BUTTON_RELOWER_MIN_SECONDS is allowed; the watchdog still caps the run.
         """
+        now = time.monotonic()
         with self._button_lock:
             self._last_button = i
-        now = time.monotonic()
+            self._presses.append((i, now))
+        if not self.lower_on_press:
+            logger.info("button %d pressed", i)
+            return
         m = self._motors[i]
         if now - m.last_button_lower >= BUTTON_RELOWER_MIN_SECONDS:
             m.last_button_lower = now
@@ -254,6 +266,17 @@ class GpioBrailleDriver:
             b = self._last_button
             self._last_button = None
             return b
+
+    def pop_presses(self) -> list[tuple[int, float]]:
+        """Return every press since the last call, oldest first, then clear them.
+
+        Each entry is (button index, time.monotonic() of the press).
+        """
+        with self._button_lock:
+            out = list(self._presses)
+            self._presses.clear()
+            self._last_button = None
+            return out
 
     # --------------------------------------------------------------- interface
 

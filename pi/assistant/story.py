@@ -7,6 +7,7 @@ fall back to a static safe story so the experience never blocks on safety.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -385,6 +386,60 @@ _FILLER_WORDS = {
     "a", "an", "the", "is", "it", "was", "and", "to", "of", "in", "on",
     "um", "uh", "i", "think", "maybe", "said", "yes", "no",
 }
+
+
+def check_answer(
+    client, question: str, answer: str, age_range: str | None = None
+) -> tuple[bool, str]:
+    """Decide whether the child's spoken answer can be used.
+
+    Returns ``(fits, reply)``. When it fits, ``reply`` is one short sentence
+    that repeats back what the child said, so the child knows Moo heard
+    them. When it does not fit, ``reply`` gently asks the question again in
+    simpler words. Silly and imaginative answers fit. Empty, filler only,
+    cut off, off topic or unsafe answers do not. If the check itself fails,
+    the answer is accepted so the story never stalls.
+    """
+    answer = (answer or "").strip()
+    age = age_range or "3-5"
+    if not answer:
+        return False, ""
+    try:
+        resp = client.chat.completions.create(
+            model=CHAT_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You help Moo, a gentle storyteller for children aged "
+                        f"{age}, listen to a child. The child's words come from "
+                        "speech recognition and may contain small errors. Decide "
+                        "if the answer responds to Moo's question in any way that "
+                        "can be used in a gentle story. Silly, imaginative or very "
+                        "short answers DO fit. The answer does NOT fit if it is "
+                        "only filler sounds (um, uh, hmm), clearly cut off in the "
+                        "middle, about something unrelated to the question, or not "
+                        "safe for a young child. Reply as JSON with two keys: "
+                        '"fits" (true or false) and "reply". If it fits, "reply" '
+                        "is ONE short, happy sentence that repeats back what the "
+                        "child said. If it does not fit, \"reply\" is ONE short, "
+                        "kind sentence that asks the question again in simpler "
+                        "words, never saying the child was wrong."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Moo asked: {question}\nThe child answered: {answer}",
+                },
+            ],
+            max_tokens=80,
+        )
+        data = json.loads(resp.choices[0].message.content or "{}")
+        return bool(data.get("fits", True)), str(data.get("reply", "")).strip()
+    except Exception:
+        logger.warning("answer check failed; accepting the answer", exc_info=True)
+        return True, ""
 
 
 def word_to_spell(answer: str, fallback_story: str) -> str:

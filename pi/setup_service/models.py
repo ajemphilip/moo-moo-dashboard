@@ -144,6 +144,24 @@ class CalibrationSaveRequest(BaseModel):
     button_pins: list[int] = Field(min_length=6, max_length=6)
 
 
+# --- Button check -------------------------------------------------------------
+
+
+class ButtonPress(BaseModel):
+    button: int
+    seconds_ago: float
+
+
+class ButtonCheckState(BaseModel):
+    active: bool
+    dry_run: bool = False
+    # Presses counted per button since the check started, in button order 0-5.
+    counts: list[int] = [0, 0, 0, 0, 0, 0]
+    last: Optional[int] = None
+    # Most recent presses, newest first.
+    recent: list[ButtonPress] = []
+
+
 # --- Letter-practice exercise -------------------------------------------------
 
 

@@ -96,6 +96,9 @@ export default function DashboardPage() {
         <Button href="/calibrate" variant="secondary" className="mt-1">
           Calibrate motors &amp; buttons
         </Button>
+        <Button href="/buttons" variant="secondary">
+          Button check
+        </Button>
         <Button href="/audio" variant="secondary">
           Sound check (speaker &amp; mic)
         </Button>

@@ -88,6 +88,45 @@ def _snapshot() -> StoryState:
         return StoryState(**_state)
 
 
+def _listen(question: str) -> str:
+    """Record the child's answer and make sure Moo can use it.
+
+    The answer is checked against the question. If it fits, Moo repeats it
+    back in one short sentence so the child knows they were heard. If it
+    does not fit (silence, filler, cut off, off topic or unsafe), Moo asks
+    once more in simpler words and listens again. The second answer is used
+    as it is, so the story never gets stuck.
+    """
+    from assistant.story import check_answer
+
+    answer = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
+    if _stop.is_set():
+        return answer
+    fits, reply = check_answer(_client, question, answer, _age_range)
+    logger.info("answer check: %r fits=%s", answer, fits)
+    if fits:
+        if reply:
+            _set(message=reply)
+            _audio.speak(reply)
+        return answer
+
+    again = reply or question
+    _set(phase="quiz", message=again)
+    _audio.speak(again)
+    if _stop.is_set():
+        return answer
+    _set(phase="listening", message=again)
+    second = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
+    logger.info("answer retry: %r", second)
+    if not second:
+        return answer
+    fits2, reply2 = check_answer(_client, again, second, _age_range)
+    if fits2 and reply2:
+        _set(message=reply2)
+        _audio.speak(reply2)
+    return second
+
+
 def _tell_and_fill(part_text: str) -> tuple[str, str]:
     """Read a story part aloud, let the child fill in its blank.
 
@@ -125,7 +164,7 @@ def _tell_and_fill(part_text: str) -> tuple[str, str]:
             return part_text.replace("___", "____"), ""
 
         _set(phase="listening", message=question)
-        answer = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
+        answer = _listen(question)
         word = word_to_spell(answer, part_text)
         logger.info("blank fill: heard %r -> %s", answer, word)
 
@@ -150,7 +189,7 @@ def _tell_and_fill(part_text: str) -> tuple[str, str]:
     if _stop.is_set():
         return part_text, ""
     _set(phase="listening", message="Listening for your idea…")
-    answer = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
+    answer = _listen(question)
     _steer_question, _steer_answer = question, answer
     return part_text, word_to_spell(answer, part_text)
 
@@ -201,6 +240,12 @@ def _spell_word(story_full: str) -> None:
             spell_awaiting=False,
             message=f"Letter {ch} — press every raised dot to clear it",
         )
+        # Drop presses left over from the previous letter BEFORE this one is
+        # announced, so a press made while Moo speaks or the dots rise counts.
+        try:
+            driver.pop_presses()
+        except Exception:
+            pass
         _audio.speak(f"The letter {ch}.")
 
         # Render this letter exactly like the letter-practice exercise:
@@ -208,21 +253,20 @@ def _spell_word(story_full: str) -> None:
         driver.render_letter(ch)
 
         # Wait until the child has lowered EVERY dot of this letter.
-        try:
-            driver.pop_last_button()  # drain any stale press
-        except Exception:
-            pass
         cleared: set[int] = set()
         _set(spell_awaiting=True)
         deadline = time.time() + SPELL_LETTER_TIMEOUT
         while cleared != dots and not _stop.is_set() and time.time() < deadline:
             try:
-                pressed = driver.pop_last_button()
+                presses = driver.pop_presses()
             except Exception:
-                pressed = None
-            if pressed is not None and pressed in dots and pressed not in cleared:
-                cleared.add(pressed)
-                _set(spell_dots_left=len(dots - cleared))
+                presses = []
+            for pressed, _t in presses:
+                if pressed in dots and pressed not in cleared:
+                    cleared.add(pressed)
+                    _set(spell_dots_left=len(dots - cleared))
+                elif pressed not in dots:
+                    logger.info("spelling %s: press on dot %d, not in the letter", ch, pressed)
             time.sleep(0.08)
         _set(spell_awaiting=False)
         # The next letter's render lowers any dots still up.
@@ -293,7 +337,7 @@ def _run_first() -> None:
             return
 
         _set(phase="listening", message="Listening for a story idea…")
-        theme = _audio.transcribe(_audio.record_until_silence())
+        theme = _listen("What should our story be about?")
         theme = (theme or "").strip() or "a friendly cow"
         logger.info("story theme: %s", theme)
         if _stop.is_set():
