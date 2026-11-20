@@ -85,8 +85,8 @@ def _snapshot() -> StoryState:
 def _listen(question: str) -> str:
     """Record the child's answer and make sure Moo can use it.
 
-    The answer is checked against the question. If it fits, Moo repeats it
-    back in one short sentence so the child knows they were heard. If it
+    The answer is checked against the question. If it fits, Moo goes on
+    without repeating it (the end chime tells the child they were heard). If it
     does not fit (silence, filler, cut off, off topic or unsafe), Moo asks
     once more in simpler words and listens again. The second answer is used
     as it is, so the story never gets stuck.
@@ -99,9 +99,8 @@ def _listen(question: str) -> str:
     fits, reply = check_answer(_client, question, answer, _age_range)
     logger.info("answer check: %r fits=%s", answer, fits)
     if fits:
-        if reply:
-            _set(message=reply)
-            _audio.speak(reply)
+        # No spoken repeat of the child's words. The falling chime at the end
+        # of the recording already tells the child Moo heard them.
         return answer
 
     again = reply or question
@@ -114,10 +113,6 @@ def _listen(question: str) -> str:
     logger.info("answer retry: %r", second)
     if not second:
         return answer
-    fits2, reply2 = check_answer(_client, again, second, _age_range)
-    if fits2 and reply2:
-        _set(message=reply2)
-        _audio.speak(reply2)
     return second
 
 
@@ -195,9 +190,6 @@ def _ask_next() -> str | None:
         fits, reply = check_answer(_client, question, heard, _age_range)
         logger.info("answer check: %r fits=%s", heard, fits)
         if fits:
-            if reply:
-                _set(message=reply)
-                _audio.speak(reply)
             _steer_question, _steer_answer = question, heard
             return heard
         question = reply or question
