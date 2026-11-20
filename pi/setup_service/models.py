@@ -144,6 +144,43 @@ class CalibrationSaveRequest(BaseModel):
     button_pins: list[int] = Field(min_length=6, max_length=6)
 
 
+# --- AI engine ----------------------------------------------------------------
+
+
+class AiSettings(BaseModel):
+    mode: Literal["cloud", "local"] = "cloud"
+    local_url: Optional[str] = None
+    local_name: Optional[str] = None
+    has_openai_key: bool = False
+    ready: bool = False
+
+
+class AiUpdateRequest(BaseModel):
+    mode: Literal["cloud", "local"]
+    local_url: Optional[str] = None
+    local_name: Optional[str] = None
+
+
+class AiEngine(BaseModel):
+    name: str
+    host: str
+    url: str
+    reachable: bool
+    ready: bool
+
+
+class AiDiscoverResponse(BaseModel):
+    engines: list[AiEngine] = []
+
+
+class AiTestResponse(BaseModel):
+    mode: str
+    line: str
+    story_seconds: float
+    voice_seconds: float
+    voice_bytes: int
+
+
 # --- Button check -------------------------------------------------------------
 
 

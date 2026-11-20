@@ -72,9 +72,12 @@ def update_config(partial: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_configured() -> bool:
-    """True iff both the OpenAI key and a wifi SSID are present."""
+    """True iff the chosen AI is set up (an OpenAI key, or a local computer)
+    and a wifi SSID is present."""
+    from assistant.ai_client import ai_ready
+
     cfg = load_config()
-    return bool(cfg.get("openai_api_key")) and bool(cfg.get("wifi", {}).get("ssid"))
+    return ai_ready(cfg) and bool(cfg.get("wifi", {}).get("ssid"))
 
 
 def reset_config() -> None:

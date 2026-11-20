@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .routes import ai as ai_routes
 from .routes import audio as audio_routes
 from .routes import braille as braille_routes
 from .routes import config as config_routes
@@ -59,6 +60,7 @@ app.include_router(audio_routes.router)
 app.include_router(letters_routes.router)
 app.include_router(story_routes.router)
 app.include_router(games_routes.router)
+app.include_router(ai_routes.router)
 
 
 @app.get("/healthz")

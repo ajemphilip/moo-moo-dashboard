@@ -41,6 +41,16 @@ export default function ApiKeyPage() {
           How do I get a key?
         </a>
       </div>
+      <div className="moo-card flex flex-col gap-2">
+        <span className="text-sm font-medium">No key? Use Moo Local instead</span>
+        <span className="text-sm text-moo-ink/70">
+          Moo can use a computer on your home network for speech and stories —
+          free, private and without internet.
+        </span>
+        <Button href="/ai?setup=1" variant="secondary">
+          Use a computer on my network
+        </Button>
+      </div>
       {error && (
         <div className="rounded-moo bg-red-50 border border-red-200 p-3 text-sm text-red-800">
           {error}

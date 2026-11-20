@@ -45,7 +45,6 @@ def main() -> int:
         logger.error("No /etc/moo/config.json — exiting (78). Run setup wizard first.")
         return EXIT_CONFIG_ERROR
 
-    api_key = cfg["openai_api_key"]
     prefs = cfg.get("preferences", {})
     audio_cfg = cfg.get("audio", {})
 
@@ -56,7 +55,10 @@ def main() -> int:
     except ImportError:
         logger.error("openai not installed")
         return 1
-    client = openai.OpenAI(api_key=api_key)
+    from assistant.ai_client import ai_mode, make_client
+
+    client = make_client(cfg)
+    logger.info("AI engine: %s", ai_mode(cfg))
 
     audio = AudioIO(
         client,

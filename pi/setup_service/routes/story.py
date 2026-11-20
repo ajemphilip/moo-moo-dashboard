@@ -292,9 +292,13 @@ def story_start() -> StoryState:
     _game_session = None
 
     cfg = moo_config.load_config()
-    api_key = cfg.get("openai_api_key")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="No OpenAI API key configured")
+    from assistant.ai_client import ai_ready, make_client
+
+    if not ai_ready(cfg):
+        raise HTTPException(
+            status_code=400,
+            detail="No AI set up yet. Add an OpenAI key or choose Moo Local under AI engine.",
+        )
 
     try:
         import openai
@@ -306,7 +310,7 @@ def story_start() -> StoryState:
         service_control.stop_assistant()
         time.sleep(1.0)
 
-    _client = openai.OpenAI(api_key=api_key)
+    _client = make_client(cfg)
     prefs = cfg.get("preferences", {}) or {}
     audio_cfg = cfg.get("audio", {}) or {}
     _age_range = prefs.get("age_range") or "3-5"

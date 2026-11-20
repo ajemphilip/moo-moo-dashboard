@@ -17,6 +17,7 @@ export default function DashboardPage() {
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 5000 });
   const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
+  const ai = useQuery({ queryKey: ["ai"], queryFn: api.aiGet });
 
   const restart = useMutation({
     mutationFn: api.restart,
@@ -101,6 +102,18 @@ export default function DashboardPage() {
         </Button>
         <Button href="/audio" variant="secondary">
           Sound check (speaker &amp; mic)
+        </Button>
+      </div>
+
+      <div className="moo-card flex flex-col gap-2">
+        <h2 className="font-semibold">AI engine</h2>
+        <p className="text-sm text-moo-ink/70">
+          {ai.data?.mode === "local"
+            ? `Local — ${ai.data.local_name ?? "a computer on your network"}. No internet or key needed.`
+            : "Cloud — OpenAI, with your key."}
+        </p>
+        <Button href="/ai" variant="secondary" className="mt-1">
+          Choose cloud or local
         </Button>
       </div>
 

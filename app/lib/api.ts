@@ -135,6 +135,30 @@ export interface ButtonCheckState {
   recent: { button: number; seconds_ago: number }[];
 }
 
+export interface AiSettings {
+  mode: "cloud" | "local";
+  local_url: string | null;
+  local_name: string | null;
+  has_openai_key: boolean;
+  ready: boolean;
+}
+
+export interface AiEngine {
+  name: string;
+  host: string;
+  url: string;
+  reachable: boolean;
+  ready: boolean;
+}
+
+export interface AiTest {
+  mode: string;
+  line: string;
+  story_seconds: number;
+  voice_seconds: number;
+  voice_bytes: number;
+}
+
 export type GameKind = "spell" | "name" | "build" | "mix";
 
 export interface GameState {
@@ -246,6 +270,16 @@ export const api = {
   buttonsState: () => request<ButtonCheckState>("/braille/buttons/state"),
   buttonsStop: () =>
     request<{ status: string }>("/braille/buttons/stop", { method: "POST", body: "{}" }),
+
+  // AI engine: cloud (OpenAI) or Moo Local on a computer
+  aiGet: () => request<AiSettings>("/ai"),
+  aiSet: (mode: "cloud" | "local", local_url?: string, local_name?: string) =>
+    request<AiSettings>("/ai", {
+      method: "POST",
+      body: JSON.stringify({ mode, local_url, local_name }),
+    }),
+  aiDiscover: () => request<{ engines: AiEngine[] }>("/ai/discover"),
+  aiTest: () => request<AiTest>("/ai/test", { method: "POST", body: "{}" }),
 
   // Word games on their own
   gamesStart: (game: GameKind) =>
