@@ -255,12 +255,20 @@ async def speech(request: Request) -> Response:
     started = time.time()
     engine = str(body.get("model") or "")
     voice_id = str(body.get("voice") or "")
+    if engine == "pocket" and not _pocket_ready():
+        engine = "kokoro"
+    if engine == "supertonic" and not _supertonic_ready():
+        engine = "kokoro"
     if engine == "mac" and voice_id in {v for v, _ in MAC_VOICES}:
         pass
     elif engine == "piper" and voice_id in _piper_voices():
         pass
     elif engine in ("mac", "piper"):
         voice_id = (MAC_VOICES[0][0] if engine == "mac" else next(iter(_piper_voices()), ""))
+    elif engine == "pocket":
+        voice_id = voice_id if voice_id in {v for v, _ in POCKET_VOICES} else POCKET_VOICES[0][0]
+    elif engine == "supertonic":
+        voice_id = voice_id if voice_id in {v for v, _ in SUPERTONIC_VOICES} else SUPERTONIC_VOICES[0][0]
     elif engine != "orpheus" and voice_id not in {v for v, _ in KOKORO_VOICES}:
         voice_id = KOKORO_VOICE
     if engine != "orpheus":
@@ -287,6 +295,13 @@ async def speech(request: Request) -> Response:
         elif engine == "piper" and voice_id:
             with wave.open(buf, "wb") as wf:
                 _get_piper(voice_id).synthesize_wav(text, wf)
+        elif engine in ("pocket", "supertonic"):
+            rate, pcm = _pocket_say(text, voice_id) if engine == "pocket" else _supertonic_say(text, voice_id)
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm.tobytes())
         elif orpheus_audio is not None:
             rate, pcm = orpheus_audio
             with wave.open(buf, "wb") as wf:
@@ -473,6 +488,56 @@ def _mac_say(text: str, voice: str) -> tuple[int, np.ndarray]:
             return wf.getframerate(), np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
 
 
+# Pocket TTS (Kyutai): a natural voice made on the processor, about eight
+# times faster than the speech it makes on this Mac.
+POCKET_VOICES = [
+    ("alba", "Alba — clear"), ("fantine", "Fantine — warm"), ("cosette", "Cosette — bright"),
+    ("eponine", "Eponine — lively"), ("azelma", "Azelma — soft"),
+    ("marius", "Marius — friendly"), ("jean", "Jean — calm"), ("javert", "Javert — deep"),
+]
+_pocket = None
+_pocket_states: dict[str, object] = {}
+
+
+def _pocket_ready() -> bool:
+    return _importable("pocket_tts")
+
+
+def _pocket_say(text: str, voice: str) -> tuple[int, np.ndarray]:
+    global _pocket
+    if _pocket is None:
+        from pocket_tts import TTSModel
+
+        _pocket = TTSModel.load_model()
+    if voice not in _pocket_states:
+        _pocket_states[voice] = _pocket.get_state_for_audio_prompt(voice)
+    audio = _pocket.generate_audio(_pocket_states[voice], text).numpy().reshape(-1)
+    return int(_pocket.sample_rate), (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+
+
+# Supertonic 3 (Supertone): about as quick as Kokoro, a different sound.
+SUPERTONIC_VOICES = [(f"F{i}", f"Female {i}") for i in range(1, 6)] + [(f"M{i}", f"Male {i}") for i in range(1, 6)]
+_supertonic = None
+_supertonic_styles: dict[str, object] = {}
+
+
+def _supertonic_ready() -> bool:
+    return _importable("supertonic")
+
+
+def _supertonic_say(text: str, voice: str) -> tuple[int, np.ndarray]:
+    global _supertonic
+    if _supertonic is None:
+        from supertonic import TTS
+
+        _supertonic = TTS()
+    if voice not in _supertonic_styles:
+        _supertonic_styles[voice] = _supertonic.get_voice_style(voice)
+    wav, _ = _supertonic.synthesize(text, voice_style=_supertonic_styles[voice], lang="en")
+    audio = np.asarray(wav, dtype=np.float32).reshape(-1)
+    return int(getattr(_supertonic, "sample_rate", 44100)), (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+
+
 # Whisper sizes for listening (id the Moo sends, model, label).
 LISTEN_MODELS = [
     ("whisper-tiny", "mlx-community/whisper-tiny.en-mlx", "Tiny — instant, misses more words"),
@@ -535,8 +600,14 @@ async def options() -> dict:
     if piper:
         engines.append({"id": "piper", "label": "Piper — very fast, clear"})
         voices_by_engine["piper"] = [{"id": v, "label": _PIPER_LABELS.get(v, v)} for v in piper]
+    if _pocket_ready():
+        engines.append({"id": "pocket", "label": "Pocket — natural and very fast"})
+        voices_by_engine["pocket"] = [{"id": v, "label": l} for v, l in POCKET_VOICES]
+    if _supertonic_ready():
+        engines.append({"id": "supertonic", "label": "Supertonic — natural, quick"})
+        voices_by_engine["supertonic"] = [{"id": v, "label": l} for v, l in SUPERTONIC_VOICES]
     if _kokoro_ready():
-        engines.append({"id": "kokoro", "label": "Kokoro — natural, about 1 s"})
+        engines.append({"id": "kokoro", "label": "Kokoro — natural, quick"})
         voices_by_engine["kokoro"] = [{"id": v, "label": l} for v, l in KOKORO_VOICES]
     if _orpheus_ready():
         engines.append({"id": "orpheus", "label": "Orpheus — acted, giggles and gasps, slow"})
