@@ -687,7 +687,7 @@ _STORY_ORDER = [
 TIERS = [
     # The story model of each tier is the best scorer at that speed.
     {"id": "instant", "label": "Instant — under a second a part, simpler stories",
-     "story_model": "qwen2.5:3b", "listen_model": "whisper-tiny", "voice_engine": "pocket", "voice": "alba"},
+     "story_model": "qwen2.5:3b", "listen_model": "whisper-tiny", "voice_engine": "kitten2s", "voice": "Eleanor"},
     {"id": "fast", "label": "Fast — about 2 s, the best scoring story model",
      "story_model": "gemma3:4b", "listen_model": "whisper-base", "voice_engine": "pocket", "voice": "alba"},
     {"id": "balanced", "label": "Balanced — about 2 s, a larger story model",
