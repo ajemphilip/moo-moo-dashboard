@@ -607,32 +607,36 @@ LISTEN_MODELS = [
     ("whisper-turbo", "mlx-community/whisper-large-v3-turbo", "Large turbo — best"),
 ]
 
-# Story models from fastest to best, with a label for the Moo's screen.
+# Story models from the lowest to the highest score in the test of
+# 20 November 2026: 74 tries of Moo's own jobs in two rounds (story length,
+# no questions, safety, using the child's answer, checking answers, picking
+# a word, riddle guesses, writing riddles). The time is for one story part.
 _STORY_ORDER = [
-    ("qwen2.5:0.5b", "Qwen 2.5 0.5B — instant, very simple"),
-    ("gemma3:1b", "Gemma 3 1B — instant, simple stories"),
-    ("llama3.2:1b", "Llama 3.2 1B — instant"),
-    ("qwen2.5:1.5b", "Qwen 2.5 1.5B — very fast"),
-    ("llama3.2:3b", "Llama 3.2 3B — very fast"),
-    ("qwen2.5:3b", "Qwen 2.5 3B — very fast"),
-    ("phi4-mini", "Phi 4 mini — fast"),
-    ("gemma3:4b", "Gemma 3 4B — fast, good stories"),
-    ("qwen2.5:7b", "Qwen 2.5 7B — good"),
-    ("llama3.1:8b", "Llama 3.1 8B — good"),
-    ("mistral-nemo", "Mistral Nemo 12B — rich"),
-    ("gemma3:12b", "Gemma 3 12B — best stories"),
+    ("qwen2.5:0.5b", "Qwen 2.5 0.5B — score 48%, 0.5 s"),
+    ("llama3.2:1b", "Llama 3.2 1B — score 57%, 1.2 s"),
+    ("gemma3:1b", "Gemma 3 1B — score 63%, 0.7 s"),
+    ("qwen2.5:1.5b", "Qwen 2.5 1.5B — score 68%, 0.7 s"),
+    ("phi4-mini", "Phi 4 mini — score 71%, 2.2 s"),
+    ("qwen2.5:3b", "Qwen 2.5 3B — score 82%, 0.8 s"),
+    ("mistral-nemo", "Mistral Nemo 12B — score 86%, 3.6 s"),
+    ("llama3.2:3b", "Llama 3.2 3B — score 89%, 1.5 s"),
+    ("llama3.1:8b", "Llama 3.1 8B — score 90%, 3.1 s"),
+    ("gemma3:12b", "Gemma 3 12B — score 91%, 4.2 s"),
+    ("qwen2.5:7b", "Qwen 2.5 7B — score 92%, 2.2 s"),
+    ("gemma3:4b", "Gemma 3 4B — score 93%, 1.6 s"),
 ]
 
 # One choice that sets everything, from instant to the slowest and richest.
 # "high" is what the Moo used on 20 November 2026; "top" adds the acted voice.
 TIERS = [
-    {"id": "instant", "label": "Instant — answers in about a second, plainer stories and voice",
-     "story_model": "gemma3:1b", "listen_model": "whisper-tiny", "voice_engine": "pocket", "voice": "alba"},
-    {"id": "fast", "label": "Fast — a few seconds",
-     "story_model": "llama3.2:3b", "listen_model": "whisper-base", "voice_engine": "pocket", "voice": "alba"},
-    {"id": "balanced", "label": "Balanced — good stories, quick",
-     "story_model": "gemma3:4b", "listen_model": "whisper-small", "voice_engine": "pocket", "voice": "alba"},
-    {"id": "high", "label": "High — best stories and the Kokoro voice",
+    # The story model of each tier is the best scorer at that speed.
+    {"id": "instant", "label": "Instant — under a second a part, simpler stories",
+     "story_model": "qwen2.5:3b", "listen_model": "whisper-tiny", "voice_engine": "pocket", "voice": "alba"},
+    {"id": "fast", "label": "Fast — about 2 s, the best scoring story model",
+     "story_model": "gemma3:4b", "listen_model": "whisper-base", "voice_engine": "pocket", "voice": "alba"},
+    {"id": "balanced", "label": "Balanced — about 2 s, a larger story model",
+     "story_model": "qwen2.5:7b", "listen_model": "whisper-small", "voice_engine": "pocket", "voice": "alba"},
+    {"id": "high", "label": "High — the largest story model and the Kokoro voice",
      "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "kokoro", "voice": "af_heart"},
     {"id": "top", "label": "Top — adds the acted Orpheus voice, about 30 s a part",
      "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "orpheus", "voice": "tara"},
