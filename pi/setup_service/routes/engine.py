@@ -122,6 +122,15 @@ def result(req: EngineResult) -> dict:
     return {"ok": True}
 
 
+@router.post("/report")
+def report(body: dict) -> dict:
+    """A lending browser says what it is loading, before it loads it. A phone
+    browser that runs out of memory closes the page without a word, so the
+    last stage reported here is where it died."""
+    logger.info("lending device %s: %s", str(body.get("device", "?"))[:120], str(body.get("stage", "?"))[:120])
+    return {"ok": True}
+
+
 @router.get("/status")
 def status() -> dict:
     with _cond:

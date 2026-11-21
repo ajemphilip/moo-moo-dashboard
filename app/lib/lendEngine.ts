@@ -47,7 +47,7 @@ export function isIOS(): boolean {
 
 export type Quality = "instant" | "auto" | "fast" | "better";
 
-async function pickLlm(quality: Quality = "auto"): Promise<string> {
+async function pickLlm(quality: Quality = "auto", wanted = ""): Promise<string> {
   // Phones get the 1B model, computers the 3B one. Use 16-bit shaders only
   // where the graphics chip supports them.
   let f16 = false;
@@ -57,6 +57,7 @@ async function pickLlm(quality: Quality = "auto"): Promise<string> {
   } catch {
     /* keep f32 */
   }
+  if (wanted) return `${wanted}-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
   if (quality === "instant") return `Qwen2.5-0.5B-Instruct-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
   const memory = (navigator as any).deviceMemory as number | undefined;
   const small =
@@ -68,11 +69,90 @@ async function pickLlm(quality: Quality = "auto"): Promise<string> {
 let llmLoaded = "";
 let asrLoaded = "";
 
+/* ------------------------------------------------- choices kept on this device */
+
+// What this device runs is its own business: a phone needs smaller models than
+// a laptop, so the choice is stored in this browser, not on the Moo.
+export interface DeviceChoice {
+  story: string; // "" = follow the size preset
+  listen: string; // "" = follow the size preset
+}
+const CHOICE_KEY = "moo_device_models";
+const LOADING_KEY = "moo_device_loading";
+
+export const STORY_CHOICES: { id: string; label: string }[] = [
+  { id: "", label: "Automatic — by the size preset" },
+  { id: "SmolLM2-360M-Instruct", label: "SmolLM2 360M — smallest, about 0.4 GB, very plain" },
+  { id: "Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B — about 0.6 GB, plain" },
+  { id: "Llama-3.2-1B-Instruct", label: "Llama 3.2 1B — about 1 GB" },
+  { id: "Qwen2.5-1.5B-Instruct", label: "Qwen 2.5 1.5B — about 1.4 GB" },
+  { id: "gemma-2-2b-it", label: "Gemma 2 2B — about 2 GB, tablets and computers" },
+  { id: "Llama-3.2-3B-Instruct", label: "Llama 3.2 3B — about 2.5 GB, computers" },
+  { id: "Qwen2.5-3B-Instruct", label: "Qwen 2.5 3B — about 2.5 GB, computers" },
+];
+export const LISTEN_CHOICES: { id: string; label: string }[] = [
+  { id: "", label: "Automatic — by the size preset" },
+  { id: "onnx-community/whisper-tiny.en", label: "Whisper tiny — smallest and quickest" },
+  { id: "onnx-community/whisper-base.en", label: "Whisper base — hears better" },
+];
+
+export function deviceChoice(): DeviceChoice {
+  try {
+    return { story: "", listen: "", ...JSON.parse(localStorage.getItem(CHOICE_KEY) || "{}") };
+  } catch {
+    return { story: "", listen: "" };
+  }
+}
+
+export function setDeviceChoice(c: Partial<DeviceChoice>) {
+  try {
+    localStorage.setItem(CHOICE_KEY, JSON.stringify({ ...deviceChoice(), ...c }));
+  } catch {
+    /* not stored */
+  }
+}
+
+/** What was being loaded when the browser last died, or null. A phone browser
+ *  that runs out of memory just closes the page, so a note is left before
+ *  each model loads and removed when it has loaded. */
+export function crashedWhileLoading(): string | null {
+  try {
+    return localStorage.getItem(LOADING_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearCrash() {
+  try {
+    localStorage.removeItem(LOADING_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
+
+function mark(stage: string | null) {
+  try {
+    if (stage) localStorage.setItem(LOADING_KEY, stage);
+    else localStorage.removeItem(LOADING_KEY);
+  } catch {
+    /* not stored */
+  }
+  // Tell the Moo, so the stage shows in its log even if this page dies.
+  fetch("/engine/report", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ device: navigator.userAgent.slice(0, 120), stage: stage ?? "loaded" }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 export async function loadModels(
   onProgress: (p: LoadProgress) => void,
   quality: Quality = "auto"
 ): Promise<string> {
-  const llmId = await pickLlm(quality);
+  const choice = deviceChoice();
+  const llmId = await pickLlm(quality, choice.story);
 
   if (llm && llmLoaded !== llmId) {
     await llm.unload?.();
@@ -81,6 +161,7 @@ export async function loadModels(
   if (!llm) {
     const webllm = await load(LIB.webllm);
     onProgress({ part: "story", text: `Loading ${llmId}…`, done: false });
+    mark(`the story model ${llmId}`);
     llm = await webllm.CreateMLCEngine(llmId, {
       initProgressCallback: (r: { text: string }) =>
         onProgress({ part: "story", text: r.text, done: false }),
@@ -89,7 +170,8 @@ export async function loadModels(
   llmLoaded = llmId;
   onProgress({ part: "story", text: `${llmId} ready`, done: true });
 
-  const asrId = quality === "instant" ? "onnx-community/whisper-tiny.en" : "onnx-community/whisper-base.en";
+  const asrId =
+    choice.listen || (quality === "instant" || isIOS() ? "onnx-community/whisper-tiny.en" : "onnx-community/whisper-base.en");
   if (asr && asrLoaded !== asrId) {
     await asr.dispose?.();
     asr = null;
@@ -97,6 +179,7 @@ export async function loadModels(
   if (!asr) {
     const { pipeline } = await load(LIB.transformers);
     onProgress({ part: "speech", text: "Loading Whisper…", done: false });
+    mark(`the listening model ${asrId.split("/")[1]}`);
     asrLoaded = asrId;
     asr = await pipeline("automatic-speech-recognition", asrId, {
       device: "webgpu",
@@ -112,6 +195,7 @@ export async function loadModels(
   if (!tts) {
     const { KokoroTTS } = await load(LIB.kokoro);
     onProgress({ part: "voice", text: "Loading Kokoro voice…", done: false });
+    mark("the Kokoro voice");
     tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
       dtype: "q8",
       device: "wasm",
@@ -122,6 +206,7 @@ export async function loadModels(
     } as any);
   }
   onProgress({ part: "voice", text: "Kokoro voice ready", done: true });
+  mark(null);
   return llmId;
 }
 
@@ -354,6 +439,7 @@ export async function startThisDevice(name: string, quality: Quality = "auto") {
     update({ model: id, status: "ready" });
   } catch (e: any) {
     running = false;
+    clearCrash(); // an error that was caught is not a crash
     update({ status: "error", note: `Could not load the models: ${e?.message ?? e}` });
     return;
   }

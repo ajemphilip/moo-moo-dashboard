@@ -16,6 +16,12 @@ import {
 } from "@/lib/api";
 import {
   canRunHere,
+  clearCrash,
+  crashedWhileLoading,
+  deviceChoice,
+  LISTEN_CHOICES,
+  setDeviceChoice,
+  STORY_CHOICES,
   startThisDevice,
   stopThisDevice,
   subscribe,
@@ -76,6 +82,8 @@ function AiPageInner() {
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<AiTest | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [crashed, setCrashed] = useState<string | null>(null);
+  const [mine, setMine] = useState({ story: "", listen: "" });
   const [copied, setCopied] = useState(false);
   const [address, setAddress] = useState("");
 
@@ -103,9 +111,15 @@ function AiPageInner() {
     return () => clearInterval(id);
   }, []);
 
-  // Arrived from the plain address with "this device" chosen: carry on here.
   useEffect(() => {
-    if (params.get("thisdevice") === "1" && !here) chooseThisDevice();
+    setCrashed(crashedWhileLoading());
+    setMine(deviceChoice());
+  }, []);
+
+  // Arrived from the plain address with "this device" chosen: carry on here,
+  // unless the browser died while loading last time (it would die again).
+  useEffect(() => {
+    if (params.get("thisdevice") === "1" && !here && !crashedWhileLoading()) chooseThisDevice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -155,9 +169,23 @@ function AiPageInner() {
       window.location.href = secureUrl;
       return;
     }
+    clearCrash();
+    setCrashed(null);
     const s = await save({ mode: "browser" });
     startThisDevice(deviceName(), (s?.browser_quality as Quality) ?? "auto");
   }
+
+  // The models this device runs are kept on this device.
+  const chooseMine = (c: Partial<{ story: string; listen: string }>) => {
+    setDeviceChoice(c);
+    setMine(deviceChoice());
+    if (thisDevice) {
+      stopThisDevice();
+      clearCrash();
+      setCrashed(null);
+      startThisDevice(deviceName(), (settings?.browser_quality as Quality) ?? "auto");
+    }
+  };
 
   const runTest = async () => {
     setBusy(true);
@@ -193,6 +221,12 @@ function AiPageInner() {
         {here && choice !== "this" && (
           <p className="text-xs text-moo-ink/60">
             Opens the Moo&apos;s secure address first. Your browser warns once — choose Advanced, then continue.
+          </p>
+        )}
+        {crashed && (
+          <p className="text-sm text-red-600">
+            Last time this browser closed while loading {crashed}. That usually means the device ran out of memory.
+            Choose smaller models under Quality and voice, then tap This device again.
           </p>
         )}
         {choice === "this" && engine && (
@@ -297,7 +331,7 @@ function AiPageInner() {
           <h2 className="font-semibold">Quality and voice</h2>
           {options.mode === "browser" && options.qualities && (
             <Select
-              label="Story model on the device"
+              label="Size preset for lent devices"
               value={settings?.browser_quality ?? "auto"}
               choices={options.qualities}
               onChange={async (v) => {
@@ -308,6 +342,25 @@ function AiPageInner() {
                 }
               }}
             />
+          )}
+          {options.mode === "browser" && !here && (
+            <>
+              <Select
+                label="Story model on this device"
+                value={mine.story}
+                choices={STORY_CHOICES}
+                onChange={(v) => chooseMine({ story: v })}
+              />
+              <Select
+                label="Listening model on this device"
+                value={mine.listen}
+                choices={LISTEN_CHOICES}
+                onChange={(v) => chooseMine({ listen: v })}
+              />
+              <p className="text-xs text-moo-ink/60">
+                These two are remembered on this device only, so a phone and a computer can each have their own.
+              </p>
+            </>
           )}
           {options.mode === "local" && options.tiers && options.tiers.length > 0 && (
             <Select

@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   canRunHere,
+  crashedWhileLoading,
   startThisDevice,
   subscribe,
   thisDeviceWanted,
@@ -40,7 +41,10 @@ export function ThisDeviceEngine() {
 
   // Start again after a reload if this device was chosen and the Moo uses it.
   useEffect(() => {
-    if (!thisDeviceWanted() || canRunHere()) return;
+    // If the browser died while loading last time, do not load again by
+    // itself: that would close the page over and over. The AI engine screen
+    // says what happened and offers smaller models.
+    if (!thisDeviceWanted() || canRunHere() || crashedWhileLoading()) return;
     api
       .aiGet()
       .then((ai) => {
