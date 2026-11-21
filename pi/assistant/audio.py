@@ -49,6 +49,37 @@ def _resample(samples, src_rate: int, dst_rate: int):
     return np.interp(dst_x, np.arange(len(samples)), samples).astype(np.int16)
 
 
+def _clarity_db() -> float:
+    """How much treble to add when Moo speaks, from audio.clarity_db in the
+    configuration. 0 turns it off."""
+    try:
+        import config
+
+        return float((config.load_config().get("audio") or {}).get("clarity_db", 6.0))
+    except Exception:
+        return 6.0
+
+
+def _brighten(samples, rate: int, db: float):
+    """Lift the treble of an int16 mono array so speech sounds less muffled
+    through Moo's small speaker inside its case. The gain rises from nothing
+    at 1.5 kHz to the full amount at 4 kHz and stays there. The result is
+    scaled down if it would clip."""
+    import numpy as np
+
+    if db <= 0 or len(samples) < 256:
+        return samples
+    spec = np.fft.rfft(samples.astype(np.float32))
+    freqs = np.fft.rfftfreq(len(samples), 1.0 / rate)
+    ramp = np.clip((freqs - 1500.0) / 2500.0, 0.0, 1.0)
+    spec *= 10.0 ** (db * ramp / 20.0)
+    out = np.fft.irfft(spec, n=len(samples))
+    peak = float(np.max(np.abs(out))) if len(out) else 0.0
+    if peak > 32000:
+        out *= 32000.0 / peak
+    return out.astype(np.int16)
+
+
 def _boost_quiet(samples):
     """Scale a quiet recording up toward a healthy level for Whisper.
 
@@ -336,6 +367,7 @@ class AudioIO:
         # OpenAI TTS is 24 kHz; USB soundcards usually want 44.1/48 kHz.
         dst_rate = _device_default_rate(self.output_device, "output")
         audio = _resample(audio, src_rate, dst_rate)
+        audio = _brighten(audio, dst_rate, _clarity_db())
 
         # Most USB soundcards expect stereo out — duplicate the mono signal.
         stereo = np.column_stack([audio, audio])
