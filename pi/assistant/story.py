@@ -180,8 +180,8 @@ def clean_part(text: str) -> str:
     """Make a story part read as story only.
 
     Smaller and local models sometimes add a greeting before the story
-    ("Hello! Moo is so happy to tell you a tale!") or a question to the child
-    at the end, although the prompt asks for neither. Moo asks its own
+    ("Hello! Moo is so happy to tell you a tale!") or a question to the child,
+    although the prompt asks for neither. Moo asks its own
     question after every part, so both are removed here.
     """
     paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
@@ -190,9 +190,14 @@ def clean_part(text: str) -> str:
     out = " ".join(" ".join(p.split()) for p in paras)
     out = re.sub(r"^\s*(here'?s|here is)[^.!:]*[:.!]\s*", "", out, flags=re.I)
     sentences = re.split(r"(?<=[.!?])\s+", out)
-    while len(sentences) > 1 and sentences[-1].rstrip().endswith("?"):
-        sentences.pop()
-    return " ".join(sentences).strip()
+    # A question anywhere in the part goes, not only one at the end: Gemma 3
+    # 12B wrote one into six of eight openings in the test of 20 November
+    # 2026. A question a character asks inside a sentence ("Who is there?"
+    # asked Pip.) stays, because that sentence does not end with it.
+    kept = [x for x in sentences if not x.rstrip().rstrip("\"'”’)").endswith("?")]
+    if not kept:  # never return nothing
+        kept = sentences[:1]
+    return " ".join(kept).strip()
 
 
 def generate_story(client, theme: str, age_range: str | None) -> str:
