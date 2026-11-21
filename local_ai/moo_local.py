@@ -5,9 +5,9 @@ the home network, with exactly the same requests. This server answers the
 four kinds the Moo uses, in OpenAI's format, so the Pi code only changes the
 address it talks to:
 
-  POST /v1/chat/completions      story, games, checks   -> Ollama (llama3.2:3b)
-  POST /v1/audio/transcriptions  the child's speech     -> Whisper (mlx-whisper)
-  POST /v1/audio/speech          Moo's voice            -> Piper
+  POST /v1/chat/completions      story, games, checks   -> Ollama (gemma3:12b)
+  POST /v1/audio/transcriptions  the child's speech     -> Whisper large-v3-turbo (mlx-whisper)
+  POST /v1/audio/speech          Moo's voice            -> Kokoro (kokoro-onnx), Piper as fallback
   POST /v1/moderations           safety check           -> Ollama, yes or no
   GET  /health                   what is running here
 
@@ -40,8 +40,11 @@ log = logging.getLogger("moo-local")
 
 PORT = int(os.environ.get("MOO_LOCAL_PORT", "8765"))
 OLLAMA = os.environ.get("MOO_OLLAMA_URL", "http://127.0.0.1:11434")
-CHAT_MODEL = os.environ.get("MOO_LOCAL_CHAT_MODEL", "llama3.2:3b")
-WHISPER_MODEL = os.environ.get("MOO_LOCAL_WHISPER", "mlx-community/whisper-small.en-mlx")
+CHAT_MODEL = os.environ.get("MOO_LOCAL_CHAT_MODEL", "gemma3:12b")
+FALLBACK_CHAT_MODEL = "llama3.2:3b"
+WHISPER_MODEL = os.environ.get("MOO_LOCAL_WHISPER", "mlx-community/whisper-large-v3-turbo")
+KOKORO_DIR = Path(os.environ.get("MOO_LOCAL_KOKORO", str(Path.home() / ".moo-local" / "kokoro")))
+KOKORO_VOICE = os.environ.get("MOO_LOCAL_KOKORO_VOICE", "af_heart")
 VOICE_PATH = Path(
     os.environ.get(
         "MOO_LOCAL_VOICE",
@@ -53,7 +56,24 @@ SERVICE_TYPE = "_mooai._tcp.local."
 app = FastAPI(title="Moo Local", version="0.1.0")
 _whisper_lock = threading.Lock()
 _voice = None
+_kokoro = None
 _voice_lock = threading.Lock()
+_chat_model: str | None = None
+
+
+async def _model() -> str:
+    """The best story model that is installed: Gemma 3 12B, else Llama 3.2 3B."""
+    global _chat_model
+    if _chat_model:
+        return _chat_model
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            names = {m.get("name") for m in (await client.get(f"{OLLAMA}/api/tags")).json().get("models", [])}
+        _chat_model = CHAT_MODEL if CHAT_MODEL in names else FALLBACK_CHAT_MODEL
+        log.info("story model: %s", _chat_model)
+    except Exception:
+        return FALLBACK_CHAT_MODEL
+    return _chat_model
 
 
 # --- story, games and checks -------------------------------------------------
@@ -61,7 +81,7 @@ _voice_lock = threading.Lock()
 @app.post("/v1/chat/completions")
 async def chat(request: Request) -> JSONResponse:
     body = await request.json()
-    body["model"] = CHAT_MODEL  # whatever the Moo asked for, the local model answers
+    body["model"] = await _model()  # whatever the Moo asked for, the local model answers
     body.pop("stream", None)
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(f"{OLLAMA}/v1/chat/completions", json=body)
@@ -83,7 +103,7 @@ async def moderations(request: Request) -> JSONResponse:
             r = await client.post(
                 f"{OLLAMA}/v1/chat/completions",
                 json={
-                    "model": CHAT_MODEL,
+                    "model": await _model(),
                     "response_format": {"type": "json_object"},
                     "max_tokens": 20,
                     "messages": [
@@ -164,6 +184,19 @@ def _get_voice():
     return _voice
 
 
+def _get_kokoro():
+    global _kokoro
+    if _kokoro is None:
+        from kokoro_onnx import Kokoro
+
+        _kokoro = Kokoro(str(KOKORO_DIR / "kokoro-v1.0.onnx"), str(KOKORO_DIR / "voices-v1.0.bin"))
+    return _kokoro
+
+
+def _kokoro_ready() -> bool:
+    return (KOKORO_DIR / "kokoro-v1.0.onnx").exists() and (KOKORO_DIR / "voices-v1.0.bin").exists()
+
+
 @app.post("/v1/audio/speech")
 async def speech(request: Request) -> Response:
     body = await request.json()
@@ -173,9 +206,18 @@ async def speech(request: Request) -> Response:
     started = time.time()
     buf = io.BytesIO()
     with _voice_lock:
-        voice = _get_voice()
-        with wave.open(buf, "wb") as wf:
-            voice.synthesize_wav(text, wf)
+        if _kokoro_ready():
+            samples, rate = _get_kokoro().create(text, voice=KOKORO_VOICE, speed=1.0, lang="en-us")
+            pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm.tobytes())
+        else:
+            voice = _get_voice()
+            with wave.open(buf, "wb") as wf:
+                voice.synthesize_wav(text, wf)
     log.info("spoke %d characters in %.1fs", len(text), time.time() - started)
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
@@ -188,18 +230,19 @@ async def health() -> dict:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             tags = (await client.get(f"{OLLAMA}/api/tags")).json()
-        ollama_ok = any(m.get("name") == CHAT_MODEL for m in tags.get("models", []))
+        names = {m.get("name") for m in tags.get("models", [])}
+        ollama_ok = CHAT_MODEL in names or FALLBACK_CHAT_MODEL in names
     except Exception:
         pass
     return {
         "service": "moo-local",
         "version": "0.1.0",
         "computer": socket.gethostname(),
-        "story_model": CHAT_MODEL,
+        "story_model": _chat_model or CHAT_MODEL,
         "story_model_ready": ollama_ok,
         "speech_model": WHISPER_MODEL,
-        "voice": VOICE_PATH.stem,
-        "voice_ready": VOICE_PATH.exists(),
+        "voice": f"kokoro {KOKORO_VOICE}" if _kokoro_ready() else VOICE_PATH.stem,
+        "voice_ready": _kokoro_ready() or VOICE_PATH.exists(),
     }
 
 

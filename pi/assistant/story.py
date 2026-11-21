@@ -164,6 +164,28 @@ def generate_line(client, kind: str, age_range: str | None = None, **ctx) -> str
         return fallback
 
 
+_INTRO_HINT = re.compile(r"\b(hello|hi|hey|here is|here's|story|tale|once more|let's begin)\b", re.I)
+
+
+def clean_part(text: str) -> str:
+    """Make a story part read as story only.
+
+    Smaller and local models sometimes add a greeting before the story
+    ("Hello! Moo is so happy to tell you a tale!") or a question to the child
+    at the end, although the prompt asks for neither. Moo asks its own
+    question after every part, so both are removed here.
+    """
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    if len(paras) > 1 and len(paras[0].split()) <= 20 and _INTRO_HINT.search(paras[0]):
+        paras = paras[1:]
+    out = " ".join(" ".join(p.split()) for p in paras)
+    out = re.sub(r"^\s*(here'?s|here is)[^.!:]*[:.!]\s*", "", out, flags=re.I)
+    sentences = re.split(r"(?<=[.!?])\s+", out)
+    while len(sentences) > 1 and sentences[-1].rstrip().endswith("?"):
+        sentences.pop()
+    return " ".join(sentences).strip()
+
+
 def generate_story(client, theme: str, age_range: str | None) -> str:
     """Generate a story about `theme`, gated through moderation."""
     for attempt in range(3):
@@ -183,8 +205,8 @@ def generate_story(client, theme: str, age_range: str | None) -> str:
             ],
             max_tokens=160,
         )
-        story = resp.choices[0].message.content.strip()
-        if _is_safe(client, story):
+        story = clean_part(resp.choices[0].message.content or "")
+        if story and _is_safe(client, story):
             return story
         logger.warning("Story flagged by moderation (attempt %d), retrying strictly", attempt + 1)
 
@@ -238,8 +260,8 @@ def extend_story(
             ],
             max_tokens=160,
         )
-        extension = resp.choices[0].message.content.strip()
-        if _is_safe(client, extension):
+        extension = clean_part(resp.choices[0].message.content or "")
+        if extension and _is_safe(client, extension):
             return extension
 
     return "And then, Moo took a deep breath and smiled, ready for one more sweet adventure tomorrow."
