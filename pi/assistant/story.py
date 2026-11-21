@@ -572,23 +572,66 @@ def pick_practice_word(client, age_range: str | None = None, exclude: set[str] |
     return random.choice(left)
 
 
+# How speech recognition writes a spoken letter name. A fixed list is used
+# here because the story models got only about half of these right when
+# they were tested on 20 November 2026.
+_LETTER_SOUNDS = {
+    "a": "a ay eh hey aye",
+    "b": "b bee be bea",
+    "c": "c see sea cee si",
+    "d": "d dee de",
+    "e": "e ee he eat",
+    "f": "f ef eff if",
+    "g": "g gee jee ji",
+    "h": "h aitch age each ach haitch",
+    "i": "i eye aye hi",
+    "j": "j jay jai",
+    "k": "k kay okay ok kaye",
+    "l": "l el ell elle",
+    "m": "m em am",
+    "n": "n en and in an",
+    "o": "o oh owe",
+    "p": "p pee pea",
+    "q": "q queue cue kew",
+    "r": "r are ar our",
+    "s": "s ess yes es as",
+    "t": "t tee tea",
+    "u": "u you ew yu",
+    "v": "v vee ve",
+    "w": "w doubleyou doubleu dub",
+    "x": "x ex eggs axe",
+    "y": "y why wye",
+    "z": "z zee zed",
+}
+_LETTER_FILLER = {
+    "it", "its", "is", "the", "letter", "think", "that", "this", "thats", "um", "uh",
+    "hmm", "maybe", "a", "an", "i", "oh", "one", "was",
+}
+
+
 def check_letter(client, letter: str, heard: str) -> bool:
     """Did the child name `letter`? Speech recognition often writes a letter
-    as its name or a sound-alike (B as 'bee', S as 'ess' or 'yes')."""
-    heard = (heard or "").strip()
-    if not heard:
+    as its name or a sound-alike (B as 'bee', S as 'ess' or 'yes'), so the
+    answer is looked up in a fixed list. `client` is not used."""
+    letter = letter.lower()
+    sounds = set(_LETTER_SOUNDS.get(letter, letter).split())
+    text = re.sub(r"[^a-z ]", "", (heard or "").lower().replace("-", " "))
+    text = text.replace("double you", "doubleyou").replace("double u", "doubleu")
+    words = text.split()
+    if not words:
         return False
-    plain = re.sub(r"[^a-z]", "", heard.lower())
-    if plain in (letter.lower(), f"letter{letter.lower()}"):
-        return True
-    verdict = _yes_no(
-        client,
-        f"A young child was asked to name a single letter of the alphabet. "
-        f"The right letter is {letter.upper()}. Speech recognition heard: "
-        f'"{heard}". Did the child say the letter {letter.upper()}, counting '
-        "its spoken name and common mishearings of it?",
-    )
-    return bool(verdict)
+    # "B like ball", "S as in sun": the letter, or a word that starts with it.
+    for i, w in enumerate(words[:-1]):
+        if w in ("like", "for") or (w == "as" and words[i + 1] == "in"):
+            example = words[-1]
+            before = [x for x in words[:i] if x in sounds]
+            if before or example.startswith(letter):
+                return True
+    # Drop filler words, but never one that is itself a sound of this letter.
+    kept = [w for w in words if w in sounds or w not in _LETTER_FILLER]
+    # What is left must be the letter and nothing else ("pee pee" is fine,
+    # "I see a dog" is not).
+    return 0 < len(kept) <= 2 and all(w in sounds for w in kept)
 
 
 def make_riddle(client, word: str, age_range: str | None = None) -> str:
