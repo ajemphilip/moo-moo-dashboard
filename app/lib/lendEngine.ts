@@ -58,6 +58,10 @@ async function pickLlm(quality: Quality = "auto", wanted = ""): Promise<string> 
     /* keep f32 */
   }
   if (wanted) return `${wanted}-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
+  // An iPhone or iPad gets the smallest story model unless another one is
+  // chosen on the device: with Qwen 2.5 0.5B the page ran out of memory when
+  // the voice was loaded after it (21 November 2026).
+  if (isIOS()) return `SmolLM2-360M-Instruct-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
   if (quality === "instant") return `Qwen2.5-0.5B-Instruct-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
   const memory = (navigator as any).deviceMemory as number | undefined;
   const small =
@@ -81,7 +85,7 @@ const CHOICE_KEY = "moo_device_models";
 const LOADING_KEY = "moo_device_loading";
 
 export const STORY_CHOICES: { id: string; label: string }[] = [
-  { id: "", label: "Automatic — by the size preset" },
+  { id: "", label: "Automatic — by the size preset (the smallest on iPhone and iPad)" },
   { id: "SmolLM2-360M-Instruct", label: "SmolLM2 360M — smallest, about 0.4 GB, very plain" },
   { id: "Qwen2.5-0.5B-Instruct", label: "Qwen 2.5 0.5B — about 0.6 GB, plain" },
   { id: "Llama-3.2-1B-Instruct", label: "Llama 3.2 1B — about 1 GB" },
@@ -162,10 +166,16 @@ export async function loadModels(
     const webllm = await load(LIB.webllm);
     onProgress({ part: "story", text: `Loading ${llmId}…`, done: false });
     mark(`the story model ${llmId}`);
-    llm = await webllm.CreateMLCEngine(llmId, {
-      initProgressCallback: (r: { text: string }) =>
-        onProgress({ part: "story", text: r.text, done: false }),
-    });
+    llm = await webllm.CreateMLCEngine(
+      llmId,
+      {
+        initProgressCallback: (r: { text: string }) =>
+          onProgress({ part: "story", text: r.text, done: false }),
+      },
+      // The memory a model keeps for its context grows with the window. Moo's
+      // prompts are short, so a phone gets half the usual window.
+      isIOS() ? { context_window_size: 2048 } : undefined
+    );
   }
   llmLoaded = llmId;
   onProgress({ part: "story", text: `${llmId} ready`, done: true });
