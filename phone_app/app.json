@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Moo AI",
+    "slug": "moo-phone-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ca.moomoo.phoneai",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Moo AI talks to your Moo storyteller on your home network.",
+        "NSBonjourServices": [
+          "_http._tcp"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "UIBackgroundModes": []
+      }
+    },
+    "newArchEnabled": true,
+    "plugins": [
+      "react-native-blob-util"
+    ]
+  }
+}
