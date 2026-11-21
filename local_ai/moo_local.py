@@ -176,10 +176,11 @@ def transcriptions(
     if audio.size < 1600:  # under 0.1 s
         return JSONResponse({"text": ""})
     started = time.time()
+    repo = dict((k, r) for k, r, _ in LISTEN_MODELS).get(model, WHISPER_MODEL)
     with _whisper_lock:
-        result = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER_MODEL)
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo)
     text = (result.get("text") or "").strip()
-    log.info("heard in %.1fs: %r", time.time() - started, text)
+    log.info("heard in %.1fs with %s: %r", time.time() - started, repo.split("/")[-1], text)
     return JSONResponse({"text": text})
 
 
@@ -254,7 +255,13 @@ async def speech(request: Request) -> Response:
     started = time.time()
     engine = str(body.get("model") or "")
     voice_id = str(body.get("voice") or "")
-    if engine != "orpheus" and voice_id not in {v for v, _ in KOKORO_VOICES}:
+    if engine == "mac" and voice_id in {v for v, _ in MAC_VOICES}:
+        pass
+    elif engine == "piper" and voice_id in _piper_voices():
+        pass
+    elif engine in ("mac", "piper"):
+        voice_id = (MAC_VOICES[0][0] if engine == "mac" else next(iter(_piper_voices()), ""))
+    elif engine != "orpheus" and voice_id not in {v for v, _ in KOKORO_VOICES}:
         voice_id = KOKORO_VOICE
     if engine != "orpheus":
         text = re.sub(r"<(giggle|laugh|chuckle|sigh|gasp|groan|yawn|cough|sniffle)>", "", text).strip()
@@ -270,7 +277,17 @@ async def speech(request: Request) -> Response:
                 log.warning("orpheus failed twice, this line in Kokoro", exc_info=True)
                 text = re.sub(r"<[a-z]+>", "", text).strip()
                 voice_id = KOKORO_VOICE
-        if orpheus_audio is not None:
+        if engine == "mac" and voice_id:
+            rate, pcm = _mac_say(text, voice_id)
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm.tobytes())
+        elif engine == "piper" and voice_id:
+            with wave.open(buf, "wb") as wf:
+                _get_piper(voice_id).synthesize_wav(text, wf)
+        elif orpheus_audio is not None:
             rate, pcm = orpheus_audio
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
@@ -297,7 +314,7 @@ async def speech(request: Request) -> Response:
             voice = _get_voice()
             with wave.open(buf, "wb") as wf:
                 voice.synthesize_wav(text, wf)
-    log.info("spoke %d characters in %.1fs", len(text), time.time() - started)
+    log.info("spoke %d characters with %s in %.1fs", len(text), engine or "kokoro", time.time() - started)
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
@@ -317,12 +334,6 @@ KOKORO_VOICES = [
     ("bm_george", "George — British storyteller"),
 ]
 
-_STORY_LABELS = {
-    "gemma3:12b": "Gemma 3 12B — best stories, about 6 s",
-    "llama3.2:3b": "Llama 3.2 3B — fastest, simpler stories",
-    "llama3.1:8b": "Llama 3.1 8B — good and quick",
-    "qwen2.5:7b": "Qwen 2.5 7B — good and quick",
-}
 
 
 _ready_cache: dict[str, bool] = {}
@@ -402,29 +413,156 @@ def _orpheus_say(text: str, voice: str) -> tuple[int, np.ndarray]:
     return rate, pcm
 
 
+# --- the faster voices and the tiers ------------------------------------------
+
+# The Mac's own voices: instant, built into macOS (id, label).
+MAC_VOICES = [
+    ("Samantha", "Samantha — US, clear"),
+    ("Flo (English (US))", "Flo — US, young"),
+    ("Sandy (English (US))", "Sandy — US, friendly"),
+    ("Shelley (English (UK))", "Shelley — British"),
+    ("Daniel", "Daniel — British"),
+    ("Karen", "Karen — Australian"),
+    ("Moira", "Moira — Irish"),
+    ("Grandma (English (US))", "Grandma — US"),
+    ("Grandpa (English (UK))", "Grandpa — British"),
+    ("Eddy (English (US))", "Eddy — US"),
+]
+
+_PIPER_LABELS = {
+    "en_US-lessac-medium": "Lessac — US, clear",
+    "en_US-ryan-high": "Ryan — US, warm",
+    "en_US-kristin-medium": "Kristin — US, bright",
+    "en_US-hfc_female-medium": "HFC — US, soft",
+    "en_US-joe-medium": "Joe — US, calm",
+    "en_US-kathleen-low": "Kathleen — US, quickest",
+    "en_US-libritts_r-medium": "LibriTTS — US, reader",
+    "en_US-amy-medium": "Amy — US",
+    "en_GB-alba-medium": "Alba — Scottish",
+    "en_GB-jenny_dioco-medium": "Jenny — British",
+    "en_GB-cori-high": "Cori — British, storyteller",
+}
+_piper: dict[str, object] = {}
+
+
+def _piper_voices() -> dict[str, Path]:
+    folder = VOICE_PATH.parent
+    return {p.stem: p for p in sorted(folder.glob("*.onnx")) if p.with_suffix(".onnx.json").exists()}
+
+
+def _get_piper(voice_id: str):
+    if voice_id not in _piper:
+        from piper import PiperVoice
+
+        _piper[voice_id] = PiperVoice.load(str(_piper_voices()[voice_id]))
+    return _piper[voice_id]
+
+
+def _mac_say(text: str, voice: str) -> tuple[int, np.ndarray]:
+    """The Mac's built-in speech, made in a few hundred milliseconds."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = str(Path(tmp) / "say.wav")
+        subprocess.run(
+            ["say", "-v", voice, "-o", out, "--file-format=WAVE", "--data-format=LEI16@22050", text],
+            check=True, timeout=60,
+        )
+        with wave.open(out, "rb") as wf:
+            return wf.getframerate(), np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+
+
+# Whisper sizes for listening (id the Moo sends, model, label).
+LISTEN_MODELS = [
+    ("whisper-tiny", "mlx-community/whisper-tiny.en-mlx", "Tiny — instant, misses more words"),
+    ("whisper-base", "mlx-community/whisper-base.en-mlx", "Base — very fast"),
+    ("whisper-small", "mlx-community/whisper-small.en-mlx", "Small — fast and good"),
+    ("whisper-turbo", "mlx-community/whisper-large-v3-turbo", "Large turbo — best"),
+]
+
+# Story models from fastest to best, with a label for the Moo's screen.
+_STORY_ORDER = [
+    ("qwen2.5:0.5b", "Qwen 2.5 0.5B — instant, very simple"),
+    ("gemma3:1b", "Gemma 3 1B — instant, simple stories"),
+    ("llama3.2:1b", "Llama 3.2 1B — instant"),
+    ("qwen2.5:1.5b", "Qwen 2.5 1.5B — very fast"),
+    ("llama3.2:3b", "Llama 3.2 3B — very fast"),
+    ("qwen2.5:3b", "Qwen 2.5 3B — very fast"),
+    ("phi4-mini", "Phi 4 mini — fast"),
+    ("gemma3:4b", "Gemma 3 4B — fast, good stories"),
+    ("qwen2.5:7b", "Qwen 2.5 7B — good"),
+    ("llama3.1:8b", "Llama 3.1 8B — good"),
+    ("mistral-nemo", "Mistral Nemo 12B — rich"),
+    ("gemma3:12b", "Gemma 3 12B — best stories"),
+]
+
+# One choice that sets everything, from instant to the slowest and richest.
+# "high" is what the Moo used on 20 November 2026; "top" adds the acted voice.
+TIERS = [
+    {"id": "instant", "label": "Instant — answers in about a second, plainer stories and voice",
+     "story_model": "gemma3:1b", "listen_model": "whisper-tiny", "voice_engine": "mac", "voice": "Samantha"},
+    {"id": "fast", "label": "Fast — a few seconds",
+     "story_model": "llama3.2:3b", "listen_model": "whisper-base", "voice_engine": "piper", "voice": "en_US-lessac-medium"},
+    {"id": "balanced", "label": "Balanced — good stories, quick",
+     "story_model": "gemma3:4b", "listen_model": "whisper-small", "voice_engine": "kokoro", "voice": "af_heart"},
+    {"id": "high", "label": "High — best stories and the Kokoro voice",
+     "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "kokoro", "voice": "af_heart"},
+    {"id": "top", "label": "Top — adds the acted Orpheus voice, about 30 s a part",
+     "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "orpheus", "voice": "tara"},
+]
+
+
+def _listen_ready(repo: str) -> bool:
+    cache = Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo.replace("/", "--"))
+    return cache.exists()
+
+
 @app.get("/moo/options")
 async def options() -> dict:
     """Story models installed here, voice engines and voices, for the Moo's screen."""
-    names = [n for n in await _installed() if "coder" not in n and "embed" not in n]
-    engines = [{"id": "kokoro", "label": "Kokoro — clear and quick"}] if _kokoro_ready() else []
+    installed = set(await _installed())
+
+    def name(n: str) -> str | None:  # Ollama keeps "phi4-mini" as "phi4-mini:latest"
+        return n if n in installed else (f"{n}:latest" if f"{n}:latest" in installed else None)
+
+    story = [{"id": name(n), "label": l} for n, l in _STORY_ORDER if name(n)]
+    known = {name(n) for n, _ in _STORY_ORDER}
+    story += [{"id": n, "label": n} for n in sorted(installed - known) if "coder" not in n and "embed" not in n]
+    engines = [{"id": "mac", "label": "Mac voices — instant, plain"}]
+    voices_by_engine: dict[str, list] = {"mac": [{"id": v, "label": l} for v, l in MAC_VOICES]}
+    piper = _piper_voices()
+    if piper:
+        engines.append({"id": "piper", "label": "Piper — very fast, clear"})
+        voices_by_engine["piper"] = [{"id": v, "label": _PIPER_LABELS.get(v, v)} for v in piper]
+    if _kokoro_ready():
+        engines.append({"id": "kokoro", "label": "Kokoro — natural, about 1 s"})
+        voices_by_engine["kokoro"] = [{"id": v, "label": l} for v, l in KOKORO_VOICES]
     if _orpheus_ready():
-        engines.append({
-            "id": "orpheus",
-            "label": "Orpheus — expressive, giggles and gasps (about twice the speech to make)",
-        })
+        engines.append({"id": "orpheus", "label": "Orpheus — acted, giggles and gasps, slow"})
+        voices_by_engine["orpheus"] = [{"id": v, "label": l} for v, l in ORPHEUS_VOICES]
     if _chatterbox_ready():
-        engines.append({
-            "id": "chatterbox",
-            "label": "Chatterbox — most expressive, very slow here (20–60 s a sentence)",
-        })
-    if not engines:
-        engines.append({"id": "piper", "label": "Piper — basic"})
+        engines.append({"id": "chatterbox", "label": "Chatterbox — acted, very slow (20–60 s a sentence)"})
+    engine_ids = {e["id"] for e in engines}
+    listen = [{"id": k, "label": l} for k, r, l in LISTEN_MODELS if _listen_ready(r)]
+    listen_ids = {m["id"] for m in listen}
+    tiers = [
+        {"id": t["id"], "label": t["label"],
+         "settings": {k: t[k] for k in ("story_model", "listen_model", "voice_engine", "voice")}}
+        for t in TIERS
+        if name(t["story_model"]) and t["voice_engine"] in engine_ids and t["listen_model"] in listen_ids
+    ]
     return {
-        "story_models": [{"id": n, "label": _STORY_LABELS.get(n, n)} for n in names],
+        "tiers": tiers,
+        "story_models": story,
         "default_story_model": await _model(),
+        "listen_models": listen,
+        "default_listen_model": "whisper-turbo",
         "voice_engines": engines,
-        "voices": [{"id": v, "label": l} for v, l in KOKORO_VOICES] if _kokoro_ready() else [],
-        "orpheus_voices": [{"id": v, "label": l} for v, l in ORPHEUS_VOICES] if _orpheus_ready() else [],
+        "voices_by_engine": voices_by_engine,
+        # older screens
+        "voices": voices_by_engine.get("kokoro", []),
+        "orpheus_voices": voices_by_engine.get("orpheus", []),
     }
 
 

@@ -176,11 +176,13 @@ class AiSettings(BaseModel):
     has_openai_key: bool = False
     ready: bool = False
     # Choices made on the AI engine screen. None means the engine's default.
+    tier: Optional[str] = None                 # local: instant | fast | balanced | high | top
     story_model: Optional[str] = None          # local: an Ollama model
-    voice_engine: Optional[str] = None         # local: kokoro | chatterbox
+    listen_model: Optional[str] = None         # local: a Whisper size
+    voice_engine: Optional[str] = None         # local: mac | piper | kokoro | orpheus | chatterbox
     voice: Optional[str] = None                # local and browser: a Kokoro voice
     expressiveness: float = 0.6                # chatterbox, 0.25 calm to 1.0 dramatic
-    browser_quality: str = "auto"              # browser: auto | fast | better
+    browser_quality: str = "auto"              # browser: instant | auto | fast | better
     cloud_story_model: Optional[str] = None    # cloud: gpt-4o-mini | gpt-4o
     cloud_voice_model: Optional[str] = None    # cloud: tts-1 | gpt-4o-mini-tts
 
@@ -189,7 +191,9 @@ class AiUpdateRequest(BaseModel):
     mode: Optional[Literal["cloud", "local", "browser"]] = None
     local_url: Optional[str] = None
     local_name: Optional[str] = None
+    tier: Optional[str] = None
     story_model: Optional[str] = None
+    listen_model: Optional[str] = None
     voice_engine: Optional[str] = None
     voice: Optional[str] = None
     expressiveness: Optional[float] = None

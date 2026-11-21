@@ -57,6 +57,7 @@ def make_client(cfg: dict[str, Any], timeout: float = 120.0):
         return Configured(
             base,
             chat_model=ai.get("story_model"),
+            listen_model=ai.get("listen_model"),
             speech_model=ai.get("voice_engine"),
             voice=ai.get("voice"),
             extra_speech={"expressiveness": ai.get("expressiveness", 0.6)},
@@ -88,12 +89,19 @@ class Configured:
     """Wraps a client so the chosen story model, voice model and voice are used,
     whatever names the story code passes. Everything else goes straight through."""
 
-    def __init__(self, client, chat_model=None, speech_model=None, voice=None, extra_speech=None):
+    def __init__(self, client, chat_model=None, speech_model=None, voice=None, extra_speech=None,
+                 listen_model=None):
         self._c = client
         self.moderations = client.moderations
         self.models = getattr(client, "models", None)
         chat_create = client.chat.completions.create
         speech_create = client.audio.speech.create
+        listen_create = client.audio.transcriptions.create
+
+        def listen(**kw):
+            if listen_model:
+                kw["model"] = listen_model
+            return listen_create(**kw)
 
         def chat(**kw):
             if chat_model:
@@ -114,7 +122,7 @@ class Configured:
 
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=chat))
         self.audio = SimpleNamespace(
-            transcriptions=client.audio.transcriptions,
+            transcriptions=SimpleNamespace(create=listen),
             speech=SimpleNamespace(create=speech),
         )
 

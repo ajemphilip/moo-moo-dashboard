@@ -40,7 +40,9 @@ def _settings() -> AiSettings:
         local_name=ai.get("local_name"),
         has_openai_key=bool(cfg.get("openai_api_key")),
         ready=ai_ready(cfg),
+        tier=ai.get("tier"),
         story_model=ai.get("story_model"),
+        listen_model=ai.get("listen_model"),
         voice_engine=ai.get("voice_engine"),
         voice=ai.get("voice"),
         expressiveness=float(ai.get("expressiveness", 0.6)),
@@ -203,6 +205,7 @@ def options() -> dict:
         return {
             "mode": mode,
             "qualities": [
+                {"id": "instant", "label": "Instant — Qwen 2.5 0.5B and the smallest Whisper, plain stories"},
                 {"id": "auto", "label": "Automatic — small on phones, larger on computers"},
                 {"id": "fast", "label": "Fast — Llama 3.2 1B, about 1 GB"},
                 {"id": "better", "label": "Better — Llama 3.2 3B, about 2.5 GB, computers"},

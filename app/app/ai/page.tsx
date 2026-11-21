@@ -246,12 +246,31 @@ function AiPageInner() {
               }}
             />
           )}
+          {options.mode === "local" && options.tiers && options.tiers.length > 0 && (
+            <Select
+              label="Speed and quality"
+              value={settings?.tier && options.tiers.some((t) => t.id === settings.tier) ? settings.tier : "custom"}
+              choices={[...options.tiers, { id: "custom", label: "Custom — my own choices below" }]}
+              onChange={(v) => {
+                const t = options.tiers!.find((x) => x.id === v);
+                save(t ? { tier: t.id, ...t.settings } : { tier: "custom" });
+              }}
+            />
+          )}
           {options.mode === "local" && options.story_models && options.story_models.length > 0 && (
             <Select
               label="Story model"
               value={settings?.story_model ?? options.default_story_model ?? options.story_models[0].id}
               choices={options.story_models}
-              onChange={(v) => save({ story_model: v })}
+              onChange={(v) => save({ tier: "custom", story_model: v })}
+            />
+          )}
+          {options.mode === "local" && options.listen_models && options.listen_models.length > 0 && (
+            <Select
+              label="Listening model"
+              value={settings?.listen_model ?? options.default_listen_model ?? options.listen_models[0].id}
+              choices={options.listen_models}
+              onChange={(v) => save({ tier: "custom", listen_model: v })}
             />
           )}
           {options.mode === "cloud" && options.story_models && (
@@ -270,10 +289,27 @@ function AiPageInner() {
                 options.voice_engines[0].id
               }
               choices={options.voice_engines}
-              onChange={(v) => save(options.mode === "cloud" ? { cloud_voice_model: v } : { voice_engine: v })}
+              onChange={(v) => {
+                if (options.mode === "cloud") return save({ cloud_voice_model: v });
+                const first = options.voices_by_engine?.[v]?.[0]?.id;
+                return save({ tier: "custom", voice_engine: v, ...(first ? { voice: first } : {}) });
+              }}
             />
           )}
-          {options.mode !== "cloud" && settings?.voice_engine === "orpheus" && options.orpheus_voices && (
+          {options.voices_by_engine && (() => {
+            const eng = settings?.voice_engine ?? options.voice_engines?.find((e) => e.id === "kokoro")?.id ?? "kokoro";
+            const list = options.voices_by_engine[eng];
+            if (!list || list.length === 0) return null;
+            return (
+              <Select
+                label="Voice"
+                value={list.some((v) => v.id === settings?.voice) ? settings!.voice! : list[0].id}
+                choices={list}
+                onChange={(v) => save({ tier: "custom", voice: v })}
+              />
+            );
+          })()}
+          {!options.voices_by_engine && options.mode !== "cloud" && settings?.voice_engine === "orpheus" && options.orpheus_voices && (
             <Select
               label="Voice"
               value={options.orpheus_voices.some((v) => v.id === settings?.voice) ? settings!.voice! : "tara"}
@@ -281,7 +317,7 @@ function AiPageInner() {
               onChange={(v) => save({ voice: v })}
             />
           )}
-          {options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
+          {!options.voices_by_engine && options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
             settings?.voice_engine !== "chatterbox" && settings?.voice_engine !== "orpheus" && (
             <Select
               label="Voice"

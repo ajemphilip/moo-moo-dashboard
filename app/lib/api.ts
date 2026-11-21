@@ -141,11 +141,13 @@ export interface AiSettings {
   local_name: string | null;
   has_openai_key: boolean;
   ready: boolean;
+  tier: string | null;
   story_model: string | null;
+  listen_model: string | null;
   voice_engine: string | null;
   voice: string | null;
   expressiveness: number;
-  browser_quality: "auto" | "fast" | "better";
+  browser_quality: "instant" | "auto" | "fast" | "better";
   cloud_story_model: string | null;
   cloud_voice_model: string | null;
 }
@@ -155,8 +157,16 @@ export interface AiChoice {
   label: string;
 }
 
+export interface AiTier extends AiChoice {
+  settings: { story_model: string; listen_model: string; voice_engine: string; voice: string };
+}
+
 export interface AiOptions {
   mode: "cloud" | "local" | "browser";
+  tiers?: AiTier[];
+  listen_models?: AiChoice[];
+  default_listen_model?: string;
+  voices_by_engine?: Record<string, AiChoice[]>;
   story_models?: AiChoice[];
   default_story_model?: string;
   voice_engines?: AiChoice[];

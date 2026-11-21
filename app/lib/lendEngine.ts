@@ -45,7 +45,7 @@ export function isIOS(): boolean {
   return /iPhone|iPad|iPod/.test(navigator.userAgent);
 }
 
-export type Quality = "auto" | "fast" | "better";
+export type Quality = "instant" | "auto" | "fast" | "better";
 
 async function pickLlm(quality: Quality = "auto"): Promise<string> {
   // Phones get the 1B model, computers the 3B one. Use 16-bit shaders only
@@ -57,6 +57,7 @@ async function pickLlm(quality: Quality = "auto"): Promise<string> {
   } catch {
     /* keep f32 */
   }
+  if (quality === "instant") return `Qwen2.5-0.5B-Instruct-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
   const memory = (navigator as any).deviceMemory as number | undefined;
   const small =
     quality === "fast" || (quality === "auto" && (isIOS() || (memory !== undefined && memory < 8)));
@@ -65,6 +66,7 @@ async function pickLlm(quality: Quality = "auto"): Promise<string> {
 }
 
 let llmLoaded = "";
+let asrLoaded = "";
 
 export async function loadModels(
   onProgress: (p: LoadProgress) => void,
@@ -87,10 +89,16 @@ export async function loadModels(
   llmLoaded = llmId;
   onProgress({ part: "story", text: `${llmId} ready`, done: true });
 
+  const asrId = quality === "instant" ? "onnx-community/whisper-tiny.en" : "onnx-community/whisper-base.en";
+  if (asr && asrLoaded !== asrId) {
+    await asr.dispose?.();
+    asr = null;
+  }
   if (!asr) {
     const { pipeline } = await load(LIB.transformers);
     onProgress({ part: "speech", text: "Loading Whisper…", done: false });
-    asr = await pipeline("automatic-speech-recognition", "onnx-community/whisper-base.en", {
+    asrLoaded = asrId;
+    asr = await pipeline("automatic-speech-recognition", asrId, {
       device: "webgpu",
       dtype: { encoder_model: "fp32", decoder_model_merged: "q4" },
       progress_callback: (p: any) => {
