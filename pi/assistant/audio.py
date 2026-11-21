@@ -372,6 +372,13 @@ class AudioIO:
         audio = _resample(audio, src_rate, dst_rate)
         audio = _brighten(audio, dst_rate, _clarity_db())
 
+        # The USB sound card swallows the first moment of sound while it wakes
+        # up, and can drop the very end. A short silence on both sides keeps
+        # the first and last word whole.
+        audio = np.concatenate([
+            np.zeros(int(dst_rate * 0.25), dtype=np.int16), audio, np.zeros(int(dst_rate * 0.3), dtype=np.int16),
+        ])
+
         # Most USB soundcards expect stereo out — duplicate the mono signal.
         stereo = np.column_stack([audio, audio])
         sd.play(stereo, dst_rate, device=self.output_device, latency="high")
