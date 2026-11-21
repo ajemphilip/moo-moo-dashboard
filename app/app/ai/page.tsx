@@ -87,18 +87,11 @@ function AiPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [crashed, setCrashed] = useState<string | null>(null);
   const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" });
-  const [copied, setCopied] = useState(false);
-  const [address, setAddress] = useState("");
 
   const here = typeof window !== "undefined" ? canRunHere() : null;
   const secureUrl =
     typeof window !== "undefined"
       ? `https://${window.location.hostname}:8443/ai/?thisdevice=1${setup ? "&setup=1" : ""}`
-      : "";
-
-  const installLine =
-    typeof window !== "undefined"
-      ? `curl -fsSL http://${window.location.hostname}:8000/local-ai/install.sh | bash`
       : "";
 
   const refreshOptions = () => api.aiOptions().then(setOptions).catch(() => setOptions(null));
@@ -151,18 +144,6 @@ function AiPageInner() {
     stopThisDevice();
     await save({ mode: "local", local_url: e.url, local_name: e.name });
   };
-  const addByAddress = async () => {
-    // "192.168.1.20", "mac.local:8765" or a full address all work.
-    let a = address.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    if (!a) return;
-    if (!a.includes(":")) a += ":8765";
-    stopThisDevice();
-    const s = await save({ mode: "local", local_url: `http://${a}/v1`, local_name: a.split(":")[0] });
-    if (s) {
-      setAddress("");
-      api.aiDiscover().then((r) => setEngines(r.engines)).catch(() => {});
-    }
-  };
   const chooseOther = async () => {
     stopThisDevice();
     await save({ mode: "browser" });
@@ -209,7 +190,77 @@ function AiPageInner() {
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
   const choice: Choice | null =
-    mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : "computer") : null;
+    mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : lent.length ? "computer" : null) : null;
+
+  // What is in use right now, in plain words, for the card at the top.
+  const labelOf = (list: { id: string; label: string }[] | undefined, id: string | null | undefined) =>
+    (list?.find((x) => x.id === id)?.label ?? id ?? "").split(" — ")[0];
+  const localMachine = engines?.find((e) => e.url === settings?.local_url);
+  const lentOther = mode === "browser" && !thisDevice;
+  const where =
+    mode === "cloud"
+      ? "the cloud (OpenAI)"
+      : mode === "local"
+        ? settings?.local_name ?? "a local machine"
+        : thisDevice
+          ? `this device (${deviceName()})`
+          : lent.length
+            ? `${lent.map((d) => d.name).join(", ")}, lent from its browser`
+            : "a lent device, but none is lending right now";
+  const voiceEngineId = settings?.voice_engine ?? "kokoro";
+  const inUse: { what: string; value: string }[] =
+    mode === "local" && options?.mode === "local"
+      ? [
+          { what: "Story", value: labelOf(options.story_models, settings?.story_model ?? options.default_story_model) },
+          { what: "Listening", value: labelOf(options.listen_models, settings?.listen_model ?? options.default_listen_model) },
+          {
+            what: "Voice",
+            value: `${labelOf(options.voice_engines, voiceEngineId)}, ${labelOf(options.voices_by_engine?.[voiceEngineId], settings?.voice) || "its first voice"}`,
+          },
+        ]
+      : mode === "cloud"
+        ? [
+            { what: "Story", value: settings?.cloud_story_model ?? "gpt-4o-mini" },
+            { what: "Listening", value: "Whisper, at OpenAI" },
+            { what: "Voice", value: settings?.cloud_voice_model ?? "tts-1" },
+          ]
+        : thisDevice
+          ? [
+              { what: "Story", value: engine?.model ? engine.model.split("-q4")[0] : labelOf(STORY_CHOICES, mine.story) },
+              { what: "Listening", value: labelOf(LISTEN_CHOICES, mine.listen) },
+              {
+                what: "Voice",
+                value: usesKitten ? `${labelOf(VOICE_CHOICES, mine.voice || "kitten-mini")}, ${mine.kittenVoice}` : `Kokoro, ${labelOf(options?.voices, settings?.voice) || "Heart"}`,
+              },
+              { what: "Memory", value: labelOf(MEMORY_CHOICES, mine.single) },
+            ]
+          : [];
+  const loadState =
+    thisDevice && engine
+      ? engine.status === "loading"
+        ? "Loading its models…"
+        : engine.status === "working"
+          ? "Working for Moo right now"
+          : engine.status === "error"
+            ? "Stopped with a problem"
+            : "Loaded and ready"
+      : mode === "local"
+        ? localMachine
+          ? localMachine.ready
+            ? "On and ready. A model is loaded the first time it is used."
+            : localMachine.reachable
+              ? "On, still getting ready"
+              : "Not answering. Is the computer on, with Moo Local running?"
+          : ""
+        : "";
+  const settingsTitle =
+    mode === "local"
+      ? `Settings for ${settings?.local_name ?? "the local machine"}`
+      : mode === "cloud"
+        ? "Settings for the cloud"
+        : thisDevice
+          ? "Settings for this device"
+          : "Settings";
 
   return (
     <StepLayout
@@ -217,6 +268,25 @@ function AiPageInner() {
       subtitle="Where Moo's listening, stories and voice are worked out — and how they sound."
       back={setup ? "/apikey" : "/dashboard"}
     >
+      <div className="moo-card flex flex-col gap-1 border-2 border-moo-accent/40">
+        <h2 className="font-semibold">In use right now</h2>
+        <p className="text-sm">
+          Moo&apos;s AI runs on <b>{settings ? where : "…"}</b>.
+        </p>
+        {inUse.map((r) => (
+          <p key={r.what} className="text-sm text-moo-ink/80">
+            <span className="inline-block w-20 text-moo-ink/60">{r.what}</span>
+            {r.value}
+          </p>
+        ))}
+        {lentOther && lent.length > 0 && (
+          <p className="text-sm text-moo-ink/80">Its models are chosen on that device, on this same screen.</p>
+        )}
+        {loadState && <p className="text-xs text-moo-ink/60">{loadState}</p>}
+      </div>
+
+      <h2 className="font-semibold mt-2">Where the AI runs</h2>
+
       <Option
         active={choice === "this"}
         title="This device"
@@ -232,7 +302,7 @@ function AiPageInner() {
         {crashed && (
           <p className="text-sm text-red-600">
             Last time this browser closed while loading {crashed}. That usually means the device ran out of memory.
-            Choose smaller models under Quality and voice, then tap This device again.
+            Choose smaller models under Settings for this device, then tap This device again.
           </p>
         )}
         {choice === "this" && engine && (
@@ -248,12 +318,12 @@ function AiPageInner() {
 
       <Option
         active={choice === "computer"}
-        title="A computer at home"
-        text="A computer at home does the work. Pick it from the list, or set one up. The computer has to be on."
+        title="Local machines"
+        text="A machine at home does the work. Tap one to use it. It has to be on."
       >
         {engines === null && <Spinner label="Looking for computers…" />}
         {engines?.length === 0 && lent.length === 0 && (
-          <p className="text-sm text-amber-700">No computer found yet. Set one up below.</p>
+          <p className="text-sm text-amber-700">No machine found yet.</p>
         )}
         {engines?.map((e) => (
           <button
@@ -268,7 +338,10 @@ function AiPageInner() {
             }`}
           >
             <div className="font-medium">{e.name}</div>
-            <div className="text-xs opacity-70">{e.ready ? "Ready" : e.reachable ? "Loading its models" : "Not answering"}</div>
+            <div className="text-xs opacity-70">
+              Moo Local · {e.ready ? "ready" : e.reachable ? "getting ready" : "not answering"}
+              {mode === "local" && settings?.local_url === e.url ? " · in use" : ""}
+            </div>
           </button>
         ))}
         {lent.map((d) => (
@@ -282,45 +355,14 @@ function AiPageInner() {
             }`}
           >
             <div className="font-medium">{d.name}</div>
-            <div className="text-xs opacity-70">Lent from its browser · {d.jobs_done} jobs done</div>
+            <div className="text-xs opacity-70">
+              Lent from its browser · {d.jobs_done} jobs done{mode === "browser" && !thisDevice ? " · in use" : ""}
+            </div>
           </button>
         ))}
-        <details className="text-sm">
-          <summary className="cursor-pointer font-medium text-moo-accent">Set up a computer</summary>
-          <div className="mt-2 flex flex-col gap-2 text-moo-ink/80">
-            <p>
-              <b>A Mac with Apple silicon:</b> open Terminal on that Mac, paste this line and press Return. It installs
-              Moo Local (about 5 GB) and starts it. The Mac then appears in the list above.
-            </p>
-            <code className="block break-all rounded-moo bg-moo-ink/5 p-2 text-xs">{installLine}</code>
-            <Button
-              variant="secondary"
-              onClick={() => navigator.clipboard?.writeText(installLine).then(() => setCopied(true)).catch(() => {})}
-            >
-              {copied ? "Copied" : "Copy the line"}
-            </Button>
-            <p>
-              <b>Any other computer or phone:</b> open the Moo website in its browser and choose This device there. It
-              then appears in the list above.
-            </p>
-            <p>
-              <b>A computer that is not found by itself:</b> type its address, for example 192.168.1.20.
-            </p>
-            <div className="flex gap-2">
-              <input
-                className="moo-input flex-1"
-                placeholder="Address of the computer"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                inputMode="url"
-                autoCapitalize="none"
-              />
-              <Button variant="secondary" onClick={addByAddress} disabled={busy || !address.trim()}>
-                Add
-              </Button>
-            </div>
-          </div>
-        </details>
+        <Button variant="secondary" onClick={() => router.push("/ai/setup")}>
+          Set up a local machine
+        </Button>
       </Option>
 
       <Option
@@ -334,10 +376,16 @@ function AiPageInner() {
       {/* Quality and voice for the engine in use */}
       {options && !options.unreachable && (
         <div className="moo-card flex flex-col gap-3">
-          <h2 className="font-semibold">Quality and voice</h2>
+          <h2 className="font-semibold">{settingsTitle}</h2>
+          {lentOther && (
+            <p className="text-sm text-moo-ink/70">
+              The story, listening and voice models of a lent device are chosen on that device. Only the settings
+              below are shared.
+            </p>
+          )}
           {options.mode === "browser" && options.qualities && (
             <Select
-              label="Size preset for lent devices"
+              label="Size preset, for devices left on Automatic"
               value={settings?.browser_quality ?? "auto"}
               choices={options.qualities}
               onChange={async (v) => {
@@ -351,6 +399,9 @@ function AiPageInner() {
           )}
           {options.mode === "browser" && !here && (
             <>
+              {!thisDevice && (
+                <p className="text-sm font-medium">What this device would load, if you tap This device:</p>
+              )}
               <Select
                 label="Story model on this device"
                 value={mine.story}
