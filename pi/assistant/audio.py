@@ -10,11 +10,49 @@ from __future__ import annotations
 import io
 import logging
 import tempfile
+import threading
+import time
 import wave
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# One sound at a time. Two threads that started a sound at the same moment
+# (a second press of Hear it on Moo, or a test during a game) left a stream
+# that never closed and held the sound card until the service was restarted.
+_OUT_LOCK = threading.Lock()
+_IN_LOCK = threading.Lock()
+
+
+def _play_array(frames, rate: int, device) -> None:
+    """Play a finished array and return when the last sample has sounded.
+
+    The stream is opened, written and closed here, under a lock, so it can
+    never be left open. If the sound card cannot be opened, the sound system
+    is started afresh once, which also frees a stream that got stuck.
+    """
+    import sounddevice as sd
+
+    with _OUT_LOCK:
+        for attempt in (1, 2):
+            try:
+                with sd.OutputStream(
+                    samplerate=rate, device=device, channels=frames.shape[1],
+                    dtype=frames.dtype, latency="high",
+                ) as stream:
+                    stream.write(frames)
+                return
+            except sd.PortAudioError:
+                if attempt == 2:
+                    raise
+                logger.warning("sound card busy or stuck; restarting the sound system", exc_info=True)
+                try:
+                    sd._terminate()
+                    sd._initialize()
+                except Exception:
+                    logger.warning("could not restart the sound system", exc_info=True)
+                time.sleep(0.3)
 
 SAMPLE_RATE = 16000  # fallback only; real I/O uses the device's native rate
 RECORD_SECONDS = 6.0
@@ -211,14 +249,15 @@ class AudioIO:
 
         rate = _device_default_rate(self.input_device, "input")
         frames = int(seconds * rate)
-        audio = sd.rec(
-            frames,
-            samplerate=rate,
-            channels=1,
-            dtype="int16",
-            device=self.input_device,
-        )
-        sd.wait()
+        with _IN_LOCK:
+            audio = sd.rec(
+                frames,
+                samplerate=rate,
+                channels=1,
+                dtype="int16",
+                device=self.input_device,
+            )
+            sd.wait()
         audio = _boost_quiet(audio)
         # Whisper accepts any sample rate — it resamples server-side.
         return _to_wav_bytes(audio.tobytes(), rate)
@@ -253,13 +292,7 @@ class AudioIO:
             parts.append(0.4 * np.sin(2 * np.pi * freq * t) * env)
         tone = np.concatenate(parts).astype(np.float32)
         try:
-            sd.play(
-                np.column_stack([tone, tone]),
-                rate,
-                device=self.output_device,
-                latency="high",
-            )
-            sd.wait()
+            _play_array(np.column_stack([tone, tone]), rate, self.output_device)
         except Exception:
             logger.warning("cue tone playback failed", exc_info=True)
 
@@ -424,8 +457,7 @@ class AudioIO:
 
         # Most USB soundcards expect stereo out — duplicate the mono signal.
         stereo = np.column_stack([audio, audio])
-        sd.play(stereo, dst_rate, device=self.output_device, latency="high")
-        sd.wait()
+        _play_array(np.ascontiguousarray(stereo), dst_rate, self.output_device)
 
 
 def _read_wav(wav_bytes: bytes):

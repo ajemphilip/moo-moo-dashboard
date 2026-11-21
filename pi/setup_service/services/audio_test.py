@@ -62,8 +62,9 @@ def play_tone(output_index: int | None) -> None:
     seq = np.concatenate([tone(440.0, 1.2), gap, tone(587.33, 1.2)])
     if stereo:
         seq = np.column_stack([seq, seq])
-    sd.play(seq, rate, device=output_index, latency="high")
-    sd.wait()
+    from assistant.audio import _play_array
+
+    _play_array(seq if seq.ndim == 2 else seq.reshape(-1, 1), rate, output_index)
 
 
 def record_and_measure(input_index: int | None, seconds: float = 3.0):
@@ -96,5 +97,7 @@ def play_back(recording, rate: int, output_index: int | None) -> None:
     peak = float(np.max(np.abs(rec))) if rec.size else 0.0
     if peak > 1e-4:
         rec = np.clip(rec * min(20.0, 0.7 / peak), -1.0, 1.0)
-    sd.play(rec, rate, device=output_index)
-    sd.wait()
+    from assistant.audio import _play_array
+
+    mono = rec.reshape(-1)
+    _play_array(np.ascontiguousarray(np.column_stack([mono, mono])), rate, output_index)
