@@ -161,6 +161,7 @@ export interface AiOptions {
   default_story_model?: string;
   voice_engines?: AiChoice[];
   voices?: AiChoice[];
+  orpheus_voices?: AiChoice[];
   qualities?: AiChoice[];
   voice_is_preference?: boolean;
   unreachable?: boolean;

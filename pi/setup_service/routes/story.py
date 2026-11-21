@@ -126,9 +126,15 @@ def _tell(part_text: str) -> str:
 
     before, after = split_blank(part_text)
     text = part_text if after is None else f"{before}something{after}".strip()
-    _set(phase="telling", message=text)
+    # Sound cues such as <giggle> are for the voice only: not on the phone,
+    # not in the story kept for the next part, never a spelling word.
+    shown = " ".join(_CUES.sub("", text).split())
+    _set(phase="telling", message=shown)
     _audio.speak(text)
-    return text
+    return shown
+
+
+_CUES = re.compile(r"<(giggle|laugh|chuckle|sigh|gasp|groan|yawn|cough|sniffle)>", re.I)
 
 
 # --- Word games (setup_service/word_games.py) ---------------------------------
@@ -293,6 +299,10 @@ def story_start() -> StoryState:
 
     cfg = moo_config.load_config()
     from assistant.ai_client import ai_ready, make_client
+    import assistant.story as story_text
+
+    _ai = cfg.get("ai") or {}
+    story_text.EXPRESSIVE_CUES = _ai.get("mode") == "local" and _ai.get("voice_engine") == "orpheus"
 
     if not ai_ready(cfg):
         raise HTTPException(

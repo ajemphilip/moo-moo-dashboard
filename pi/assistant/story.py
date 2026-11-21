@@ -38,6 +38,10 @@ _BLANK_INSTRUCTION = (
 )
 
 
+# Set by the session when the voice is Orpheus, which performs sound cues.
+EXPRESSIVE_CUES = False
+
+
 def _system_prompt(age_range: str | None, strict: bool = False) -> str:
     age = age_range or "3-5"
     base = (
@@ -53,6 +57,11 @@ def _system_prompt(age_range: str | None, strict: bool = False) -> str:
         "happens next separately. Reply with only the words Moo reads aloud: "
         "no title, no introduction such as 'Here is the story', no notes."
     )
+    if EXPRESSIVE_CUES:
+        base += (
+            " The voice can perform sound cues. Where it truly fits, add at most "
+            "two of these, written exactly so: <giggle> <laugh> <gasp> <sigh> <chuckle>."
+        )
     if strict:
         base += (
             " Use only soft, comforting themes — friendship, kindness, "

@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -253,13 +254,22 @@ async def speech(request: Request) -> Response:
     started = time.time()
     engine = str(body.get("model") or "")
     voice_id = str(body.get("voice") or "")
-    if voice_id not in {v for v, _ in KOKORO_VOICES}:
+    if engine != "orpheus" and voice_id not in {v for v, _ in KOKORO_VOICES}:
         voice_id = KOKORO_VOICE
+    if engine != "orpheus":
+        text = re.sub(r"<(giggle|laugh|chuckle|sigh|gasp|groan|yawn|cough|sniffle)>", "", text).strip()
     buf = io.BytesIO()
     with _voice_lock:
         if engine != "chatterbox":
             _free_chatterbox()
-        if engine == "chatterbox" and _chatterbox_ready():
+        if engine == "orpheus" and _orpheus_ready():
+            rate, pcm = _orpheus_say(text, voice_id)
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm.tobytes())
+        elif engine == "chatterbox" and _chatterbox_ready():
             rate, pcm = _chatterbox_say(text, float(body.get("expressiveness") or 0.6))
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
@@ -307,13 +317,53 @@ _STORY_LABELS = {
 }
 
 
-def _chatterbox_ready() -> bool:
-    try:
-        import importlib.util
+_ready_cache: dict[str, bool] = {}
 
-        return importlib.util.find_spec("chatterbox") is not None
-    except Exception:
-        return False
+
+def _importable(module: str) -> bool:
+    if module not in _ready_cache:
+        try:
+            __import__(module)
+            _ready_cache[module] = True
+        except Exception:
+            log.warning("%s is not usable here", module, exc_info=True)
+            _ready_cache[module] = False
+    return _ready_cache[module]
+
+
+def _chatterbox_ready() -> bool:
+    return _importable("chatterbox.tts")
+
+
+def _orpheus_ready() -> bool:
+    return _importable("mlx_audio.tts.utils")
+
+
+ORPHEUS_MODEL = os.environ.get("MOO_LOCAL_ORPHEUS", "mlx-community/orpheus-3b-0.1-ft-4bit")
+ORPHEUS_VOICES = [
+    ("tara", "Tara — warm"), ("leah", "Leah — bright"), ("jess", "Jess — lively"),
+    ("mia", "Mia — gentle"), ("zoe", "Zoe — young"), ("leo", "Leo — friendly"),
+    ("dan", "Dan — easygoing"), ("zac", "Zac — cheerful"),
+]
+_orpheus = None
+
+
+def _orpheus_say(text: str, voice: str) -> tuple[int, np.ndarray]:
+    """Orpheus, the expressive voice that understands <giggle>, <laugh>,
+    <chuckle>, <sigh>, <gasp>, <groan>, <yawn> written into the text."""
+    global _orpheus
+    from mlx_audio.tts.utils import load_model
+
+    if _orpheus is None:
+        _orpheus = load_model(ORPHEUS_MODEL)
+    if voice not in {v for v, _ in ORPHEUS_VOICES}:
+        voice = "tara"
+    chunks, rate = [], 24000
+    for r in _orpheus.generate(text=text, voice=voice, verbose=False):
+        chunks.append(np.array(r.audio))
+        rate = r.sample_rate
+    audio = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros(1, np.float32)
+    return rate, (np.clip(audio, -1, 1) * 32767).astype(np.int16)
 
 
 @app.get("/moo/options")
@@ -321,6 +371,11 @@ async def options() -> dict:
     """Story models installed here, voice engines and voices, for the Moo's screen."""
     names = [n for n in await _installed() if "coder" not in n and "embed" not in n]
     engines = [{"id": "kokoro", "label": "Kokoro — clear and quick"}] if _kokoro_ready() else []
+    if _orpheus_ready():
+        engines.append({
+            "id": "orpheus",
+            "label": "Orpheus — expressive, giggles and gasps (about twice the speech to make)",
+        })
     if _chatterbox_ready():
         engines.append({
             "id": "chatterbox",
@@ -333,6 +388,7 @@ async def options() -> dict:
         "default_story_model": await _model(),
         "voice_engines": engines,
         "voices": [{"id": v, "label": l} for v, l in KOKORO_VOICES] if _kokoro_ready() else [],
+        "orpheus_voices": [{"id": v, "label": l} for v, l in ORPHEUS_VOICES] if _orpheus_ready() else [],
     }
 
 

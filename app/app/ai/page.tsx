@@ -273,10 +273,19 @@ function AiPageInner() {
               onChange={(v) => save(options.mode === "cloud" ? { cloud_voice_model: v } : { voice_engine: v })}
             />
           )}
-          {options.mode !== "cloud" && options.voices && options.voices.length > 0 && settings?.voice_engine !== "chatterbox" && (
+          {options.mode !== "cloud" && settings?.voice_engine === "orpheus" && options.orpheus_voices && (
             <Select
               label="Voice"
-              value={settings?.voice ?? "af_heart"}
+              value={options.orpheus_voices.some((v) => v.id === settings?.voice) ? settings!.voice! : "tara"}
+              choices={options.orpheus_voices}
+              onChange={(v) => save({ voice: v })}
+            />
+          )}
+          {options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
+            settings?.voice_engine !== "chatterbox" && settings?.voice_engine !== "orpheus" && (
+            <Select
+              label="Voice"
+              value={options.voices.some((v) => v.id === settings?.voice) ? settings!.voice! : "af_heart"}
               choices={options.voices}
               onChange={(v) => save({ voice: v })}
             />
