@@ -22,7 +22,15 @@
     },
     "newArchEnabled": true,
     "plugins": [
-      "react-native-blob-util"
+      "react-native-blob-util",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ]
     ]
   }
 }
