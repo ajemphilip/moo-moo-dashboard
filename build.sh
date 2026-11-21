@@ -21,4 +21,10 @@ fi
 rm -rf "$PI_STATIC_DIR"
 cp -R "$APP_DIR/out" "$PI_STATIC_DIR"
 
+# Moo Local travels with the Moo, so a computer can install it from the Moo
+# itself (GET /local-ai/install.sh).
+rm -rf "$ROOT/pi/local_ai"
+mkdir -p "$ROOT/pi/local_ai"
+cp "$ROOT"/local_ai/*.py "$ROOT"/local_ai/*.txt "$ROOT"/local_ai/install.sh "$ROOT/pi/local_ai/"
+
 echo "==> DONE. rsync -avz --delete \"$ROOT/pi/\" philipn1@moo.local:~/pi/"

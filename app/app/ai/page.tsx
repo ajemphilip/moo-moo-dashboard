@@ -28,7 +28,7 @@ function errMsg(e: unknown): string {
   return e instanceof PiApiError ? e.message : "Something went wrong.";
 }
 
-type Choice = "cloud" | "this" | "computer" | "other";
+type Choice = "cloud" | "this" | "computer";
 
 function Option({
   active, title, text, onClick, disabled, children,
@@ -76,11 +76,18 @@ function AiPageInner() {
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<AiTest | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [address, setAddress] = useState("");
 
   const here = typeof window !== "undefined" ? canRunHere() : null;
   const secureUrl =
     typeof window !== "undefined"
       ? `https://${window.location.hostname}:8443/ai/?thisdevice=1${setup ? "&setup=1" : ""}`
+      : "";
+
+  const installLine =
+    typeof window !== "undefined"
+      ? `curl -fsSL http://${window.location.hostname}:8000/local-ai/install.sh | bash`
       : "";
 
   const refreshOptions = () => api.aiOptions().then(setOptions).catch(() => setOptions(null));
@@ -127,6 +134,18 @@ function AiPageInner() {
     stopThisDevice();
     await save({ mode: "local", local_url: e.url, local_name: e.name });
   };
+  const addByAddress = async () => {
+    // "192.168.1.20", "mac.local:8765" or a full address all work.
+    let a = address.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!a) return;
+    if (!a.includes(":")) a += ":8765";
+    stopThisDevice();
+    const s = await save({ mode: "local", local_url: `http://${a}/v1`, local_name: a.split(":")[0] });
+    if (s) {
+      setAddress("");
+      api.aiDiscover().then((r) => setEngines(r.engines)).catch(() => {});
+    }
+  };
   const chooseOther = async () => {
     stopThisDevice();
     await save({ mode: "browser" });
@@ -156,7 +175,7 @@ function AiPageInner() {
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
   const choice: Choice | null =
-    mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : "other") : null;
+    mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : "computer") : null;
 
   return (
     <StepLayout
@@ -189,11 +208,13 @@ function AiPageInner() {
 
       <Option
         active={choice === "computer"}
-        title="A computer with Moo Local"
-        text="A computer at home runs Moo Local. The best local quality: bigger models and the expressive voice. The computer has to be on."
+        title="A computer at home"
+        text="A computer at home does the work. Pick it from the list, or set one up. The computer has to be on."
       >
         {engines === null && <Spinner label="Looking for computers…" />}
-        {engines?.length === 0 && <p className="text-sm text-amber-700">No computer with Moo Local found.</p>}
+        {engines?.length === 0 && lent.length === 0 && (
+          <p className="text-sm text-amber-700">No computer found yet. Set one up below.</p>
+        )}
         {engines?.map((e) => (
           <button
             key={e.url}
@@ -201,7 +222,7 @@ function AiPageInner() {
             disabled={busy || !e.reachable}
             onClick={() => chooseComputer(e)}
             className={`rounded-moo border px-3 py-2 text-left disabled:opacity-50 ${
-              choice === "computer" && settings?.local_url === e.url
+              mode === "local" && settings?.local_url === e.url
                 ? "bg-moo-accent text-white border-moo-accent"
                 : "bg-white border-moo-ink/20"
             }`}
@@ -210,6 +231,56 @@ function AiPageInner() {
             <div className="text-xs opacity-70">{e.ready ? "Ready" : e.reachable ? "Loading its models" : "Not answering"}</div>
           </button>
         ))}
+        {lent.map((d) => (
+          <button
+            key={`lent-${d.name}`}
+            type="button"
+            disabled={busy}
+            onClick={chooseOther}
+            className={`rounded-moo border px-3 py-2 text-left disabled:opacity-50 ${
+              mode === "browser" && !thisDevice ? "bg-moo-accent text-white border-moo-accent" : "bg-white border-moo-ink/20"
+            }`}
+          >
+            <div className="font-medium">{d.name}</div>
+            <div className="text-xs opacity-70">Lent from its browser · {d.jobs_done} jobs done</div>
+          </button>
+        ))}
+        <details className="text-sm">
+          <summary className="cursor-pointer font-medium text-moo-accent">Set up a computer</summary>
+          <div className="mt-2 flex flex-col gap-2 text-moo-ink/80">
+            <p>
+              <b>A Mac with Apple silicon:</b> open Terminal on that Mac, paste this line and press Return. It installs
+              Moo Local (about 5 GB) and starts it. The Mac then appears in the list above.
+            </p>
+            <code className="block break-all rounded-moo bg-moo-ink/5 p-2 text-xs">{installLine}</code>
+            <Button
+              variant="secondary"
+              onClick={() => navigator.clipboard?.writeText(installLine).then(() => setCopied(true)).catch(() => {})}
+            >
+              {copied ? "Copied" : "Copy the line"}
+            </Button>
+            <p>
+              <b>Any other computer or phone:</b> open the Moo website in its browser and choose This device there. It
+              then appears in the list above.
+            </p>
+            <p>
+              <b>A computer that is not found by itself:</b> type its address, for example 192.168.1.20.
+            </p>
+            <div className="flex gap-2">
+              <input
+                className="moo-input flex-1"
+                placeholder="Address of the computer"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                inputMode="url"
+                autoCapitalize="none"
+              />
+              <Button variant="secondary" onClick={addByAddress} disabled={busy || !address.trim()}>
+                Add
+              </Button>
+            </div>
+          </div>
+        </details>
       </Option>
 
       <Option
@@ -218,14 +289,6 @@ function AiPageInner() {
         text={`Needs internet and an OpenAI key; each story costs a little.${settings && !settings.has_openai_key ? " No key is saved yet." : ""}`}
         onClick={chooseCloud}
         disabled={busy || !settings?.has_openai_key}
-      />
-
-      <Option
-        active={choice === "other"}
-        title="Another phone or laptop"
-        text={lent.length ? `Lent right now: ${lent.map((d) => d.name).join(", ")}` : "Open the Moo website on another device and choose This device there."}
-        onClick={chooseOther}
-        disabled={busy}
       />
 
       {/* Quality and voice for the engine in use */}

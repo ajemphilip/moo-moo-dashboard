@@ -1,0 +1,14 @@
+# Moo Local, the base set the installer puts on a computer: story (through
+# Ollama), listening, and the quick voices Pocket, Kokoro, Piper and
+# Supertonic. The slow acted voices are in requirements.txt.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.19
+httpx==0.28.1
+numpy==2.1.3
+mlx-whisper==0.4.2
+piper-tts==1.3.0
+zeroconf==0.136.2
+kokoro-onnx==0.4.9
+supertonic==1.3.1
+pocket-tts==4.0.1

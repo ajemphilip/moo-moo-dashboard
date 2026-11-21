@@ -1,0 +1,4 @@
+# Kitten TTS 2 needs newer libraries than Moo Local. It gets its own environment:
+#   python3.12 -m venv ~/.moo-kitten2-venv
+#   ~/.moo-kitten2-venv/bin/pip install -r requirements-kitten2.txt
+kittenml[mlx]==0.9.8

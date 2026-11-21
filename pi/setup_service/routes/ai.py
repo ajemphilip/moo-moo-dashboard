@@ -113,6 +113,19 @@ def discover() -> AiDiscoverResponse:
             reachable=health is not None,
             ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
         )
+    # A computer added by its address stays in the list even when it does
+    # not announce itself on the network.
+    ai = moo_config.load_config().get("ai") or {}
+    saved = (ai.get("local_url") or "").rstrip("/")
+    if saved and saved not in engines:
+        health = _health(saved)
+        engines[saved] = AiEngine(
+            name=ai.get("local_name") or saved,
+            host=saved.split("//")[-1].split(":")[0],
+            url=saved,
+            reachable=health is not None,
+            ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
+        )
     return AiDiscoverResponse(engines=list(engines.values()))
 
 
