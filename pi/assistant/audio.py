@@ -37,16 +37,35 @@ def _device_default_rate(index: Optional[int], kind: str) -> int:
 
 
 def _resample(samples, src_rate: int, dst_rate: int):
-    """Linear-interpolation resample of an int16 mono array."""
-    if src_rate == dst_rate:
+    """Resample an int16 mono array through its spectrum.
+
+    The plain straight-line resampling used before left a hiss above the
+    voice, which the treble lift then made louder. Here the sound is
+    transformed, its spectrum is copied into a longer or shorter one, and
+    transformed back, so nothing is added that was not in the voice.
+    """
+    if src_rate == dst_rate or len(samples) < 2:
         return samples
+    import math
+
     import numpy as np
 
-    n_dst = int(round(len(samples) * dst_rate / src_rate))
-    if n_dst <= 0:
-        return samples
-    dst_x = np.linspace(0, len(samples) - 1, n_dst)
-    return np.interp(dst_x, np.arange(len(samples)), samples).astype(np.int16)
+    g = math.gcd(int(src_rate), int(dst_rate))
+    up, down = int(dst_rate) // g, int(src_rate) // g
+    n = len(samples)
+    # Pad to a length the transform handles quickly and that maps to a whole
+    # number of output samples.
+    m = 1
+    while m * down < n:
+        m *= 2
+    spec = np.fft.rfft(samples.astype(np.float32), n=m * down)
+    n_out = m * up
+    out_spec = np.zeros(n_out // 2 + 1, dtype=spec.dtype)
+    keep = min(len(spec), len(out_spec))
+    out_spec[:keep] = spec[:keep]
+    out = np.fft.irfft(out_spec, n=n_out) * (up / down)
+    out = out[: int(round(n * dst_rate / src_rate))]
+    return np.clip(out, -32768, 32767).astype(np.int16)
 
 
 def _clarity_db() -> float:
@@ -60,20 +79,44 @@ def _clarity_db() -> float:
         return 12.0
 
 
-def _brighten(samples, rate: int, db: float):
-    """Lift the treble of an int16 mono array so speech sounds less muffled
-    through Moo's small speaker inside its case. The gain rises from nothing
-    at 1.5 kHz to the full amount at 4 kHz and stays there, and the lowest
-    notes are turned down a little. The result is scaled down if it would clip."""
+# How bright a spoken line should be: the energy from 2 to 8 kHz against the
+# energy from 200 Hz to 2 kHz, in dB. The voices differ by almost 20 dB
+# (Pocket about -20, Kokoro Heart about -12, Kitten Kiki about -7), so each
+# line is measured and lifted only as far as it needs.
+_TILT_AT_ZERO = -16.0   # target with the Clarity slider at 0
+_TILT_PER_STEP = 0.5    # each step of the slider asks for half a dB more
+_MAX_LIFT_DB = 18.0
+
+
+def _brighten(samples, rate: int, clarity: float):
+    """Lift the treble of an int16 mono array so speech sounds clear through
+    Moo's small speaker inside its case, by as much as this voice needs.
+
+    The line's own brightness is measured first. A dull voice gets a large
+    lift and a crisp one little or none, so all voices come out alike. The
+    lift rises from nothing at 1.5 kHz to the full amount at 4 kHz, and the
+    lowest notes are turned down by a third as much. The result is scaled
+    down if it would clip. `clarity` is the slider of the AI engine screen,
+    0 to 18; 0 turns the lift off.
+    """
     import numpy as np
 
-    if db <= 0 or len(samples) < 256:
+    if clarity <= 0 or len(samples) < 256:
         return samples
     spec = np.fft.rfft(samples.astype(np.float32))
     freqs = np.fft.rfftfreq(len(samples), 1.0 / rate)
+    power = np.abs(spec) ** 2
+    low_e = float(power[(freqs >= 200) & (freqs < 2000)].sum())
+    high_e = float(power[(freqs >= 2000) & (freqs < 8000)].sum())
+    if low_e <= 0 or high_e <= 0:
+        return samples
+    tilt = 10.0 * np.log10(high_e / low_e)
+    target = _TILT_AT_ZERO + _TILT_PER_STEP * clarity
+    db = float(np.clip(1.2 * (target - tilt), 0.0, _MAX_LIFT_DB))
+    logger.info("clarity: voice at %.1f dB, target %.1f, lift %.1f dB", tilt, target, db)
+    if db <= 0:
+        return samples
     ramp = np.clip((freqs - 1500.0) / 2500.0, 0.0, 1.0)
-    # The case also makes the low notes boom: take a third as much off below
-    # 250 Hz, fading out by 700 Hz.
     low = np.clip((700.0 - freqs) / 450.0, 0.0, 1.0)
     spec *= 10.0 ** ((db * ramp - db / 3.0 * low) / 20.0)
     out = np.fft.irfft(spec, n=len(samples))
@@ -369,8 +412,8 @@ class AudioIO:
 
         # OpenAI TTS is 24 kHz; USB soundcards usually want 44.1/48 kHz.
         dst_rate = _device_default_rate(self.output_device, "output")
+        audio = _brighten(audio, src_rate, _clarity_db())
         audio = _resample(audio, src_rate, dst_rate)
-        audio = _brighten(audio, dst_rate, _clarity_db())
 
         # The USB sound card swallows the first moment of sound while it wakes
         # up, and can drop the very end. A short silence on both sides keeps
