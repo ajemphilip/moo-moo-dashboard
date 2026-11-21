@@ -5,7 +5,8 @@ inside the same process as Whisper, and the two together made the GPU time
 out. Here the voices have their own GPU context.
 
 One request per line on stdin, as JSON:
-    {"engine": "orpheus" | "qwen3" | "kitten", "text": ..., "voice": ..., "out": path}
+    {"engine": "orpheus" | "qwen3" | "kitten", "repo": model or null,
+     "text": ..., "voice": ..., "out": path}
 It writes a 16 bit mono wav to "out" and answers one line on stdout:
 {"ok": true, "seconds": ...} or {"ok": false, "error": ...}.
 """
@@ -50,21 +51,24 @@ def main() -> None:
 
     from mlx_audio.tts.utils import load_model
 
-    models: dict[str, object] = {}
+    models: dict[str, tuple] = {}
 
-    def get(engine: str):
-        if engine not in models:
-            if engine in BIG:
-                for other in BIG & set(models):
-                    del models[other]
-                import gc
+    def get(engine: str, repo: str | None):
+        """The model for this engine and quality. Only one big model and one
+        size of each small model stay in memory."""
+        repo = repo or REPOS[engine]
+        if models.get(engine, (None, None))[0] != repo:
+            for other in (BIG & set(models)) | {engine}:
+                if other == engine or engine in BIG:
+                    models.pop(other, None)
+            import gc
 
-                import mlx.core as mx
+            import mlx.core as mx
 
-                gc.collect()
-                mx.clear_cache()
-            models[engine] = load_model(REPOS[engine])
-        return models[engine]
+            gc.collect()
+            mx.clear_cache()
+            models[engine] = (repo, load_model(repo))
+        return models[engine][1]
 
     say(ok=True, ready=True)
     for line in sys.stdin:
@@ -72,7 +76,7 @@ def main() -> None:
             job = json.loads(line)
             engine = job.get("engine", "orpheus")
             started = time.time()
-            model = get(engine)
+            model = get(engine, job.get("repo"))
             if engine == "qwen3":
                 results = model.generate_custom_voice(
                     text=job["text"], speaker=job["voice"], language="English",

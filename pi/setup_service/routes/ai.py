@@ -46,6 +46,7 @@ def _settings() -> AiSettings:
         voice_engine=ai.get("voice_engine"),
         voice=ai.get("voice"),
         expressiveness=float(ai.get("expressiveness", 0.6)),
+        voice_qualities=dict(ai.get("voice_qualities") or {}),
         browser_quality=ai.get("browser_quality", "auto"),
         clarity_db=float((cfg.get("audio") or {}).get("clarity_db", 12.0)),
         cloud_story_model=ai.get("cloud_story_model"),

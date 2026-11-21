@@ -255,6 +255,7 @@ async def speech(request: Request) -> Response:
     started = time.time()
     engine = str(body.get("model") or "")
     voice_id = str(body.get("voice") or "")
+    quality = str(body.get("quality") or "") or None
     if engine == "pocket" and not _pocket_ready():
         engine = "kokoro"
     if engine == "supertonic" and not _supertonic_ready():
@@ -281,7 +282,7 @@ async def speech(request: Request) -> Response:
         mlx_ok = {"orpheus": _orpheus_ready, "qwen3": _qwen3_ready, "kitten": _kitten_ready}
         if engine in mlx_ok and mlx_ok[engine]():
             try:
-                orpheus_audio = _orpheus_say(text, voice_id, engine)
+                orpheus_audio = _orpheus_say(text, voice_id, engine, _quality(engine, quality))
             except Exception:
                 log.warning("%s failed twice, this line in Kokoro", engine, exc_info=True)
                 text = re.sub(r"<[a-z]+>", "", text).strip()
@@ -297,7 +298,8 @@ async def speech(request: Request) -> Response:
             with wave.open(buf, "wb") as wf:
                 _get_piper(voice_id).synthesize_wav(text, wf)
         elif engine in ("pocket", "supertonic"):
-            rate, pcm = _pocket_say(text, voice_id) if engine == "pocket" else _supertonic_say(text, voice_id)
+            rate, pcm = _pocket_say(text, voice_id) if engine == "pocket" else _supertonic_say(
+                text, voice_id, _quality("supertonic", quality) or 8)
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
@@ -330,7 +332,8 @@ async def speech(request: Request) -> Response:
             voice = _get_voice()
             with wave.open(buf, "wb") as wf:
                 voice.synthesize_wav(text, wf)
-    log.info("spoke %d characters with %s in %.1fs", len(text), engine or "kokoro", time.time() - started)
+    log.info("spoke %d characters with %s%s in %.1fs", len(text), engine or "kokoro",
+             f" ({quality})" if quality else "", time.time() - started)
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
@@ -416,6 +419,39 @@ def _cached(repo: str) -> bool:
     return (Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo.replace("/", "--"))).exists()
 
 
+# Each voice model's own quality settings (id, label, what it means here).
+# The last one that is installed is the default, as before.
+VOICE_QUALITIES = {
+    "kitten": [
+        ("nano", "Nano — 15M, quickest", "mlx-community/kitten-tts-nano-0.8"),
+        ("micro", "Micro — 40M", "mlx-community/kitten-tts-micro-0.8"),
+        ("mini", "Mini — 80M, best", "mlx-community/kitten-tts-mini-0.8"),
+    ],
+    "supertonic": [
+        ("fast", "Fast — 3 steps", 3),
+        ("normal", "Normal — 5 steps", 5),
+        ("fine", "Fine — 8 steps, cleanest", 8),
+    ],
+    "qwen3": [
+        ("small", "Small — 0.6B, quicker", "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"),
+        ("large", "Large — 1.7B, richer, slower", "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"),
+    ],
+}
+_DEFAULT_QUALITY = {"kitten": "mini", "supertonic": "fine", "qwen3": "small"}
+
+
+def _qualities(engine: str) -> list[tuple]:
+    """The quality settings of `engine` that can be used on this computer."""
+    return [q for q in VOICE_QUALITIES.get(engine, []) if not isinstance(q[2], str) or _cached(q[2])]
+
+
+def _quality(engine: str, wanted: str | None):
+    """The setting behind a quality id: a model for Kitten and Qwen3, a
+    number of steps for Supertonic. Falls back to the default."""
+    have = {q[0]: q[2] for q in _qualities(engine)}
+    return have.get(wanted or "") or have.get(_DEFAULT_QUALITY.get(engine, "")) or next(iter(have.values()), None)
+
+
 def _qwen3_ready() -> bool:
     return _orpheus_ready() and _cached("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
@@ -424,7 +460,7 @@ def _kitten_ready() -> bool:
     return _orpheus_ready() and _cached("mlx-community/kitten-tts-mini-0.8")
 
 
-def _orpheus_say(text: str, voice: str, engine: str = "orpheus") -> tuple[int, np.ndarray]:
+def _orpheus_say(text: str, voice: str, engine: str = "orpheus", repo: str | None = None) -> tuple[int, np.ndarray]:
     """A voice from the MLX worker. Orpheus is the expressive one that
     understands <giggle>, <laugh>, <chuckle>, <sigh>, <gasp>, <groan>, <yawn>
     written into the text; Qwen3 reads as a storyteller; Kitten is tiny."""
@@ -439,7 +475,7 @@ def _orpheus_say(text: str, voice: str, engine: str = "orpheus") -> tuple[int, n
         # times out once; the second try nearly always works.
         for attempt in (1, 2):
             worker = _orpheus_worker()
-            worker.stdin.write(json.dumps({"engine": engine, "text": text, "voice": voice, "out": out}) + "\n")
+            worker.stdin.write(json.dumps({"engine": engine, "repo": repo, "text": text, "voice": voice, "out": out}) + "\n")
             worker.stdin.flush()
             answer = json.loads(worker.stdout.readline() or '{"ok": false, "error": "worker stopped"}')
             if answer.get("ok"):
@@ -550,7 +586,7 @@ def _supertonic_ready() -> bool:
     return _importable("supertonic")
 
 
-def _supertonic_say(text: str, voice: str) -> tuple[int, np.ndarray]:
+def _supertonic_say(text: str, voice: str, steps: int = 8) -> tuple[int, np.ndarray]:
     global _supertonic
     if _supertonic is None:
         from supertonic import TTS
@@ -558,7 +594,7 @@ def _supertonic_say(text: str, voice: str) -> tuple[int, np.ndarray]:
         _supertonic = TTS()
     if voice not in _supertonic_styles:
         _supertonic_styles[voice] = _supertonic.get_voice_style(voice)
-    wav, _ = _supertonic.synthesize(text, voice_style=_supertonic_styles[voice], lang="en")
+    wav, _ = _supertonic.synthesize(text, voice_style=_supertonic_styles[voice], total_steps=int(steps), lang="en")
     audio = np.asarray(wav, dtype=np.float32).reshape(-1)
     return int(getattr(_supertonic, "sample_rate", 44100)), (np.clip(audio, -1, 1) * 32767).astype(np.int16)
 
@@ -624,7 +660,9 @@ async def options() -> dict:
     piper = _piper_voices()
     if piper:
         engines.append({"id": "piper", "label": "Piper — very fast, clear"})
-        voices_by_engine["piper"] = [{"id": v, "label": _PIPER_LABELS.get(v, v)} for v in piper]
+        voices_by_engine["piper"] = [
+            {"id": v, "label": f"{_PIPER_LABELS.get(v, v)} · {v.rsplit('-', 1)[-1]} quality"} for v in piper
+        ]
     if _pocket_ready():
         engines.append({"id": "pocket", "label": "Pocket — natural and very fast"})
         voices_by_engine["pocket"] = [{"id": v, "label": l} for v, l in POCKET_VOICES]
@@ -662,6 +700,11 @@ async def options() -> dict:
         "default_listen_model": "whisper-turbo",
         "voice_engines": engines,
         "voices_by_engine": voices_by_engine,
+        "voice_qualities": {
+            e: [{"id": q[0], "label": q[1]} for q in _qualities(e)]
+            for e in VOICE_QUALITIES if e in engine_ids and len(_qualities(e)) > 1
+        },
+        "default_voice_quality": _DEFAULT_QUALITY,
         # older screens
         "voices": voices_by_engine.get("kokoro", []),
         "orpheus_voices": voices_by_engine.get("orpheus", []),

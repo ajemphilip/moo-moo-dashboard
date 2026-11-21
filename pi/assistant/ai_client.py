@@ -60,7 +60,10 @@ def make_client(cfg: dict[str, Any], timeout: float = 120.0):
             listen_model=ai.get("listen_model"),
             speech_model=ai.get("voice_engine"),
             voice=ai.get("voice"),
-            extra_speech={"expressiveness": ai.get("expressiveness", 0.6)},
+            extra_speech={
+                "expressiveness": ai.get("expressiveness", 0.6),
+                "quality": (ai.get("voice_qualities") or {}).get(ai.get("voice_engine") or "", ""),
+            },
         )
     key = cfg.get("openai_api_key")
     if not key:

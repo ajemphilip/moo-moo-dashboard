@@ -288,7 +288,12 @@ function AiPageInner() {
                 (options.mode === "cloud" ? settings?.cloud_voice_model : settings?.voice_engine) ??
                 options.voice_engines[0].id
               }
-              choices={options.voice_engines}
+              choices={options.voice_engines.map((e) => {
+                // The quality in use is shown next to the voice model's name.
+                const qs = options.voice_qualities?.[e.id];
+                const q = qs?.find((x) => x.id === (settings?.voice_qualities?.[e.id] ?? options.default_voice_quality?.[e.id]));
+                return q ? { id: e.id, label: `${e.label} · ${q.label.split(" — ")[0]} quality` } : e;
+              })}
               onChange={(v) => {
                 if (options.mode === "cloud") return save({ cloud_voice_model: v });
                 const first = options.voices_by_engine?.[v]?.[0]?.id;
@@ -296,6 +301,19 @@ function AiPageInner() {
               }}
             />
           )}
+          {options.mode === "local" && options.voice_qualities && (() => {
+            const eng = settings?.voice_engine ?? "kokoro";
+            const qs = options.voice_qualities[eng];
+            if (!qs || qs.length < 2) return null;
+            return (
+              <Select
+                label="Voice quality"
+                value={settings?.voice_qualities?.[eng] ?? options.default_voice_quality?.[eng] ?? qs[qs.length - 1].id}
+                choices={qs}
+                onChange={(v) => save({ tier: "custom", voice_qualities: { ...(settings?.voice_qualities ?? {}), [eng]: v } })}
+              />
+            );
+          })()}
           {options.voices_by_engine && (() => {
             const eng = settings?.voice_engine ?? options.voice_engines?.find((e) => e.id === "kokoro")?.id ?? "kokoro";
             const list = options.voices_by_engine[eng];

@@ -182,6 +182,7 @@ class AiSettings(BaseModel):
     voice_engine: Optional[str] = None         # local: mac | piper | kokoro | orpheus | chatterbox
     voice: Optional[str] = None                # local and browser: a Kokoro voice
     expressiveness: float = 0.6                # chatterbox, 0.25 calm to 1.0 dramatic
+    voice_qualities: dict[str, str] = {}       # local: the quality chosen for each voice model
     browser_quality: str = "auto"              # browser: instant | auto | fast | better
     clarity_db: float = 12.0                   # treble lift for Moo's speaker, 0 to 18 dB
     cloud_story_model: Optional[str] = None    # cloud: gpt-4o-mini | gpt-4o
@@ -198,6 +199,7 @@ class AiUpdateRequest(BaseModel):
     voice_engine: Optional[str] = None
     voice: Optional[str] = None
     expressiveness: Optional[float] = None
+    voice_qualities: Optional[dict[str, str]] = None
     browser_quality: Optional[str] = None
     clarity_db: Optional[float] = None
     cloud_story_model: Optional[str] = None

@@ -147,6 +147,7 @@ export interface AiSettings {
   voice_engine: string | null;
   voice: string | null;
   expressiveness: number;
+  voice_qualities: Record<string, string>;
   browser_quality: "instant" | "auto" | "fast" | "better";
   clarity_db: number;
   cloud_story_model: string | null;
@@ -168,6 +169,8 @@ export interface AiOptions {
   listen_models?: AiChoice[];
   default_listen_model?: string;
   voices_by_engine?: Record<string, AiChoice[]>;
+  voice_qualities?: Record<string, AiChoice[]>;
+  default_voice_quality?: Record<string, string>;
   story_models?: AiChoice[];
   default_story_model?: string;
   voice_engines?: AiChoice[];
