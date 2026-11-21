@@ -227,7 +227,10 @@ async function loadListen(onProgress: Progress, quality: Quality) {
     asr = null;
   }
   if (!asr) {
-    const { pipeline } = await load(LIB.transformers);
+    const { pipeline, env } = await load(LIB.transformers);
+    // One thread on a phone: several threads share one large block of memory
+    // that has to be set aside in advance, and a phone often refuses it.
+    if (isIOS() && env?.backends?.onnx?.wasm) env.backends.onnx.wasm.numThreads = 1;
     onProgress({ part: "speech", text: "Loading Whisper…", done: false });
     mark(`the listening model ${asrId.split("/")[1]}${isIOS() ? " (on the processor)" : ""}`);
     asrLoaded = asrId;
