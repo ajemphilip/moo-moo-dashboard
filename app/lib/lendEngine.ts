@@ -85,6 +85,7 @@ export interface DeviceChoice {
   listen: string; // "" = follow the size preset
   voice: string; // "" = automatic: Kitten on iPhone and iPad, Kokoro elsewhere
   kittenVoice: string; // the Kitten voice of this device
+  single: string; // "" = automatic (one at a time on iPhone and iPad), "on", "off"
 }
 const CHOICE_KEY = "moo_device_models";
 const LOADING_KEY = "moo_device_loading";
@@ -110,11 +111,16 @@ export const VOICE_CHOICES: { id: string; label: string }[] = [
   { id: "kitten-nano", label: "Kitten nano — lightest, 24 MB, for phones" },
   { id: "kitten-micro", label: "Kitten micro — 41 MB, for phones" },
   { id: "kitten-mini", label: "Kitten mini — 78 MB, best Kitten" },
-  { id: "kokoro", label: "Kokoro — most natural, too heavy for phones" },
+  { id: "kokoro", label: "Kokoro — most natural; on a phone only with one model at a time" },
   { id: "kokoro-gpu", label: "Kokoro on the graphics chip — a try for phones, 160 MB" },
 ];
 export const KITTEN_VOICES = ["Bruno", "Hugo", "Jasper", "Leo", "Kiki", "Luna", "Rosie", "Bella"];
-const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno" };
+const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" };
+export const MEMORY_CHOICES: { id: string; label: string }[] = [
+  { id: "", label: "Automatic — one at a time on iPhone and iPad" },
+  { id: "on", label: "One model at a time — less memory, slower" },
+  { id: "off", label: "All three at once — fastest, needs the most memory" },
+];
 
 export function deviceChoice(): DeviceChoice {
   try {
@@ -172,10 +178,11 @@ function mark(stage: string | null) {
   }).catch(() => {});
 }
 
-export async function loadModels(
-  onProgress: (p: LoadProgress) => void,
-  quality: Quality = "auto"
-): Promise<string> {
+type Progress = (p: LoadProgress) => void;
+let lastQuality: Quality = "auto";
+let lastProgress: Progress = () => {};
+
+async function loadStory(onProgress: Progress, quality: Quality): Promise<string> {
   const choice = deviceChoice();
   const llmId = await pickLlm(quality, choice.story);
 
@@ -200,7 +207,11 @@ export async function loadModels(
   }
   llmLoaded = llmId;
   onProgress({ part: "story", text: `${llmId} ready`, done: true });
+  return llmId;
+}
 
+async function loadListen(onProgress: Progress, quality: Quality) {
+  const choice = deviceChoice();
   const asrId =
     choice.listen || (quality === "instant" || isIOS() ? "onnx-community/whisper-tiny.en" : "onnx-community/whisper-base.en");
   if (asr && asrLoaded !== asrId) {
@@ -226,7 +237,9 @@ export async function loadModels(
     } as any);
   }
   onProgress({ part: "speech", text: "Whisper ready", done: true });
+}
 
+async function loadVoice(onProgress: Progress) {
   const wantVoice = voiceEngine();
   if (tts && ttsLoaded !== wantVoice) tts = null;
   if (!tts && wantVoice.startsWith("kitten-")) {
@@ -260,6 +273,69 @@ export async function loadModels(
   }
   ttsLoaded = wantVoice;
   onProgress({ part: "voice", text: "Voice ready", done: true });
+}
+
+async function unloadStory() {
+  if (!llm) return;
+  await llm.unload?.();
+  llm = null;
+}
+
+async function unloadListen() {
+  if (!asr) return;
+  await asr.dispose?.();
+  asr = null;
+}
+
+async function unloadVoice() {
+  // Kitten has no way to be unloaded and is small, so it stays.
+  if (!tts || tts.kitten) return;
+  await tts.model?.dispose?.();
+  tts = null;
+}
+
+/** One model at a time: a phone browser gives a page too little memory for
+ *  all three, so only the model the next job needs is kept, and the others
+ *  are loaded again from the device's storage when their turn comes. */
+export function oneAtATime(): boolean {
+  const c = deviceChoice().single;
+  return c === "on" || (c === "" && isIOS());
+}
+
+/** Make sure the model for this kind of job is loaded, and in the
+ *  one-at-a-time mode that the others are not. */
+async function need(part: "story" | "speech" | "voice") {
+  if (oneAtATime()) {
+    if (part !== "story") await unloadStory();
+    if (part !== "speech") await unloadListen();
+    if (part !== "voice") await unloadVoice();
+  }
+  const missing = (part === "story" && !llm) || (part === "speech" && !asr) || (part === "voice" && !tts);
+  if (!missing) return;
+  if (part === "story") await loadStory(lastProgress, lastQuality);
+  if (part === "speech") await loadListen(lastProgress, lastQuality);
+  if (part === "voice") await loadVoice(lastProgress);
+  mark(null);
+}
+
+export async function loadModels(onProgress: Progress, quality: Quality = "auto"): Promise<string> {
+  lastQuality = quality;
+  lastProgress = onProgress;
+  if (oneAtATime()) {
+    // Fetch each model once, so that later swaps come from the device's
+    // storage, and end with the story model, which the first job needs.
+    await unloadStory();
+    await loadVoice(onProgress);
+    await unloadVoice();
+    await loadListen(onProgress, quality);
+    await unloadListen();
+    const id = await loadStory(onProgress, quality);
+    mark(null);
+    return `${id}, one model at a time`;
+  }
+  const llmId = await loadStory(onProgress, quality);
+  await loadListen(onProgress, quality);
+  await loadVoice(onProgress);
   mark(null);
   return llmId;
 }
@@ -324,6 +400,7 @@ function wavTo16k(bytes: Uint8Array): Float32Array {
 
 async function runJob(job: Job): Promise<Record<string, unknown>> {
   const p = job.payload as any;
+  await need(job.kind === "transcribe" ? "speech" : job.kind === "speak" ? "voice" : "story");
   if (job.kind === "chat") {
     const req: any = { messages: p.messages, max_tokens: p.max_tokens ?? 256, temperature: 0.8 };
     if (p.response_format?.type === "json_object") req.response_format = { type: "json_object" };

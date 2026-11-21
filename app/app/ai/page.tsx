@@ -21,6 +21,7 @@ import {
   deviceChoice,
   KITTEN_VOICES,
   LISTEN_CHOICES,
+  MEMORY_CHOICES,
   VOICE_CHOICES,
   setDeviceChoice,
   STORY_CHOICES,
@@ -85,7 +86,7 @@ function AiPageInner() {
   const [test, setTest] = useState<AiTest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crashed, setCrashed] = useState<string | null>(null);
-  const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno" });
+  const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" });
   const [copied, setCopied] = useState(false);
   const [address, setAddress] = useState("");
 
@@ -178,7 +179,7 @@ function AiPageInner() {
   }
 
   // The models this device runs are kept on this device.
-  const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string }>) => {
+  const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string; single: string }>) => {
     setDeviceChoice(c);
     setMine(deviceChoice());
     if (thisDevice) {
@@ -376,6 +377,12 @@ function AiPageInner() {
                   onChange={(v) => chooseMine({ kittenVoice: v })}
                 />
               )}
+              <Select
+                label="Memory on this device"
+                value={mine.single}
+                choices={MEMORY_CHOICES}
+                onChange={(v) => chooseMine({ single: v })}
+              />
               <p className="text-xs text-moo-ink/60">
                 These are remembered on this device only, so a phone and a computer can each have their own.
               </p>
