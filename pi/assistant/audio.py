@@ -329,12 +329,7 @@ class AudioIO:
         import numpy as np
         import sounddevice as sd
 
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            src_rate = wf.getframerate()
-            channels = wf.getnchannels()
-            frames = wf.readframes(wf.getnframes())
-
-        audio = np.frombuffer(frames, dtype=np.int16)
+        src_rate, channels, audio = _read_wav(wav_bytes)
         if channels > 1:
             audio = audio.reshape(-1, channels).mean(axis=1).astype(np.int16)
 
@@ -346,6 +341,39 @@ class AudioIO:
         stereo = np.column_stack([audio, audio])
         sd.play(stereo, dst_rate, device=self.output_device, latency="high")
         sd.wait()
+
+
+def _read_wav(wav_bytes: bytes):
+    """Rate, channels and 16 bit samples of a wav. Besides ordinary 16 bit
+    wavs this reads the 32 bit float wavs a browser voice sends (format 3),
+    which Python's wave module refuses."""
+    import struct
+
+    import numpy as np
+
+    if wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+        raise ValueError("not a wav")
+    pos, fmt, data = 12, None, None
+    while pos + 8 <= len(wav_bytes):
+        cid, size = wav_bytes[pos:pos + 4], struct.unpack("<I", wav_bytes[pos + 4:pos + 8])[0]
+        body = wav_bytes[pos + 8:pos + 8 + size]
+        if cid == b"fmt ":
+            fmt = struct.unpack("<HHIIHH", body[:16])
+        elif cid == b"data":
+            data = body
+        pos += 8 + size + (size & 1)
+    if fmt is None or data is None:
+        raise ValueError("wav without fmt or data")
+    tag, channels, rate, _, _, bits = fmt
+    if tag == 0xFFFE:  # extensible: decide by bit depth
+        tag = 3 if bits == 32 else 1
+    if tag == 3 and bits == 32:
+        audio = (np.clip(np.frombuffer(data, dtype="<f4"), -1, 1) * 32767).astype(np.int16)
+    elif tag == 1 and bits == 16:
+        audio = np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2").astype(np.int16)
+    else:
+        raise ValueError(f"wav format {tag} with {bits} bits is not supported")
+    return rate, channels, audio
 
 
 def _to_wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
