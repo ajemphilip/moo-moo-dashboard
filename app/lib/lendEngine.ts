@@ -85,7 +85,7 @@ export interface DeviceChoice {
   listen: string; // "" = follow the size preset
   voice: string; // "" = automatic: Kitten on iPhone and iPad, Kokoro elsewhere
   kittenVoice: string; // the Kitten voice of this device
-  single: string; // "" = automatic (one at a time on iPhone and iPad), "on", "off"
+  single: string; // "on" = one model at a time, anything else = all at once
 }
 const CHOICE_KEY = "moo_device_models";
 const LOADING_KEY = "moo_device_loading";
@@ -111,15 +111,14 @@ export const VOICE_CHOICES: { id: string; label: string }[] = [
   { id: "kitten-nano", label: "Kitten nano — lightest, 24 MB, for phones" },
   { id: "kitten-micro", label: "Kitten micro — 41 MB, for phones" },
   { id: "kitten-mini", label: "Kitten mini — 78 MB, best Kitten" },
-  { id: "kokoro", label: "Kokoro — most natural; on a phone only with one model at a time" },
-  { id: "kokoro-gpu", label: "Kokoro on the graphics chip — a try for phones, 160 MB" },
+  { id: "kokoro", label: "Kokoro — most natural, for computers; too heavy for a phone browser" },
+  { id: "kokoro-gpu", label: "Kokoro on the graphics chip — for computers; too heavy for a phone browser" },
 ];
 export const KITTEN_VOICES = ["Bruno", "Hugo", "Jasper", "Leo", "Kiki", "Luna", "Rosie", "Bella"];
 const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" };
 export const MEMORY_CHOICES: { id: string; label: string }[] = [
-  { id: "", label: "Automatic — one at a time on iPhone and iPad" },
-  { id: "on", label: "One model at a time — less memory, slower" },
-  { id: "off", label: "All three at once — fastest, needs the most memory" },
+  { id: "", label: "All three at once — the usual way" },
+  { id: "on", label: "One model at a time — an experiment, slower" },
 ];
 
 export function deviceChoice(): DeviceChoice {
@@ -160,6 +159,15 @@ export function clearCrash() {
   } catch {
     /* nothing to clear */
   }
+}
+
+function report(stage: string) {
+  fetch("/engine/report", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ device: navigator.userAgent.slice(0, 120), stage }),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 function mark(stage: string | null) {
@@ -298,8 +306,9 @@ async function unloadVoice() {
  *  all three, so only the model the next job needs is kept, and the others
  *  are loaded again from the device's storage when their turn comes. */
 export function oneAtATime(): boolean {
-  const c = deviceChoice().single;
-  return c === "on" || (c === "" && isIOS());
+  // Not the default: on the iPhone 16 Pro it gained nothing. Kokoro closed the
+  // page even when loaded alone, and the set that does fit, fits all at once.
+  return deviceChoice().single === "on";
 }
 
 /** Make sure the model for this kind of job is loaded, and in the
@@ -307,7 +316,6 @@ export function oneAtATime(): boolean {
 async function need(part: "story" | "speech" | "voice") {
   if (oneAtATime()) {
     if (part !== "story") await unloadStory();
-    if (part !== "speech") await unloadListen();
     if (part !== "voice") await unloadVoice();
   }
   const missing = (part === "story" && !llm) || (part === "speech" && !asr) || (part === "voice" && !tts);
@@ -327,8 +335,7 @@ export async function loadModels(onProgress: Progress, quality: Quality = "auto"
     await unloadStory();
     await loadVoice(onProgress);
     await unloadVoice();
-    await loadListen(onProgress, quality);
-    await unloadListen();
+    await loadListen(onProgress, quality); // small, and stays loaded
     const id = await loadStory(onProgress, quality);
     mark(null);
     return `${id}, one model at a time`;
@@ -605,6 +612,7 @@ export async function startThisDevice(name: string, quality: Quality = "auto") {
   } catch (e: any) {
     running = false;
     clearCrash(); // an error that was caught is not a crash
+    report(`error while loading: ${String(e?.message ?? e).slice(0, 100)}`);
     update({ status: "error", note: `Could not load the models: ${e?.message ?? e}` });
     return;
   }
