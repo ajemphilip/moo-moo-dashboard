@@ -683,7 +683,8 @@ _STORY_ORDER = [
 ]
 
 # One choice that sets everything, from instant to the slowest and richest.
-# "high" is what the Moo used on 20 November 2026; "top" adds the acted voice.
+# "high" is what the Moo used on 20 November 2026; "top" has the Qwen3 voice
+# (Orpheus until 21 November, when the maker judged it one of the worst).
 TIERS = [
     # The story model of each tier is the best scorer at that speed.
     {"id": "instant", "label": "Instant — under a second a part, simpler stories",
@@ -694,8 +695,8 @@ TIERS = [
      "story_model": "qwen2.5:7b", "listen_model": "whisper-small", "voice_engine": "pocket", "voice": "alba"},
     {"id": "high", "label": "High — the largest story model and the Kokoro voice",
      "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "kokoro", "voice": "af_heart"},
-    {"id": "top", "label": "Top — adds the acted Orpheus voice, about 30 s a part",
-     "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "orpheus", "voice": "tara"},
+    {"id": "top", "label": "Top — the largest story model and the enthusiastic Qwen3 voice",
+     "story_model": "gemma3:12b", "listen_model": "whisper-turbo", "voice_engine": "qwen3", "voice": "serena"},
 ]
 
 
