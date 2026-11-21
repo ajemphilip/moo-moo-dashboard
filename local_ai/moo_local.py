@@ -591,7 +591,7 @@ _STORY_ORDER = [
 # "high" is what the Moo used on 20 November 2026; "top" adds the acted voice.
 TIERS = [
     {"id": "instant", "label": "Instant — answers in about a second, plainer stories and voice",
-     "story_model": "gemma3:1b", "listen_model": "whisper-tiny", "voice_engine": "mac", "voice": "Samantha"},
+     "story_model": "gemma3:1b", "listen_model": "whisper-tiny", "voice_engine": "kitten", "voice": "Bella"},
     {"id": "fast", "label": "Fast — a few seconds",
      "story_model": "llama3.2:3b", "listen_model": "whisper-base", "voice_engine": "pocket", "voice": "alba"},
     {"id": "balanced", "label": "Balanced — good stories, quick",
