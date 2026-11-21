@@ -1,11 +1,11 @@
-"""The MLX voices (Orpheus, Qwen3-TTS, Kitten) in a process of their own.
+"""The MLX voices (Orpheus, Qwen3-TTS) in a process of their own.
 
 Moo Local starts this once and keeps it running. Orpheus used the Mac's GPU
 inside the same process as Whisper, and the two together made the GPU time
 out. Here the voices have their own GPU context.
 
 One request per line on stdin, as JSON:
-    {"engine": "orpheus" | "qwen3" | "kitten", "repo": model or null,
+    {"engine": "orpheus" | "qwen3", "repo": model or null,
      "text": ..., "voice": ..., "out": path}
 It writes a 16 bit mono wav to "out" and answers one line on stdout:
 {"ok": true, "seconds": ...} or {"ok": false, "error": ...}.
@@ -24,7 +24,6 @@ import numpy as np
 REPOS = {
     "orpheus": os.environ.get("MOO_LOCAL_ORPHEUS", "mlx-community/orpheus-3b-0.1-ft-4bit"),
     "qwen3": os.environ.get("MOO_LOCAL_QWEN3", "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"),
-    "kitten": os.environ.get("MOO_LOCAL_KITTEN", "mlx-community/kitten-tts-mini-0.8"),
 }
 BIG = {"orpheus", "qwen3"}  # only one of these stays in memory
 STORYTELLER = "Read it like a warm, playful storyteller reading to a young child, with wonder and excitement."
@@ -39,15 +38,6 @@ def main() -> None:
     def say(**kw) -> None:
         answers.write(json.dumps(kw) + "\n")
         answers.flush()
-
-    # Kitten turns text into sounds with espeak; a copy comes with Kokoro.
-    try:
-        import espeakng_loader
-
-        os.environ.setdefault("PHONEMIZER_ESPEAK_LIBRARY", espeakng_loader.get_library_path())
-        os.environ.setdefault("ESPEAK_DATA_PATH", espeakng_loader.get_data_path())
-    except Exception:
-        pass
 
     from mlx_audio.tts.utils import load_model
 

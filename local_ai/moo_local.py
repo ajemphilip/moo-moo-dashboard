@@ -270,7 +270,7 @@ async def speech(request: Request) -> Response:
         voice_id = voice_id if voice_id in {v for v, _ in POCKET_VOICES} else POCKET_VOICES[0][0]
     elif engine == "supertonic":
         voice_id = voice_id if voice_id in {v for v, _ in SUPERTONIC_VOICES} else SUPERTONIC_VOICES[0][0]
-    elif engine not in ("orpheus", "qwen3", "kitten") and voice_id not in {v for v, _ in KOKORO_VOICES}:
+    elif engine not in ("orpheus", "qwen3", "kitten2", "kitten2s") and voice_id not in {v for v, _ in KOKORO_VOICES}:
         voice_id = KOKORO_VOICE
     if engine != "orpheus":
         text = re.sub(r"<(giggle|laugh|chuckle|sigh|gasp|groan|yawn|cough|sniffle)>", "", text).strip()
@@ -279,7 +279,14 @@ async def speech(request: Request) -> Response:
         if engine != "chatterbox":
             _free_chatterbox()
         orpheus_audio = None
-        mlx_ok = {"orpheus": _orpheus_ready, "qwen3": _qwen3_ready, "kitten": _kitten_ready}
+        mlx_ok = {"orpheus": _orpheus_ready, "qwen3": _qwen3_ready}
+        if (engine == "kitten2" and _kitten2_ready()) or (engine == "kitten2s" and _kitten2s_ready()):
+            try:
+                repo = "KittenML/kitten-tts-2" if engine == "kitten2" else _quality("kitten2s", quality)
+                orpheus_audio = _kitten2_say(text, voice_id, repo)
+            except Exception:
+                log.warning("%s failed, this line in Kokoro", engine, exc_info=True)
+                voice_id = KOKORO_VOICE
         if engine in mlx_ok and mlx_ok[engine]():
             try:
                 orpheus_audio = _orpheus_say(text, voice_id, engine, _quality(engine, quality))
@@ -409,10 +416,63 @@ QWEN3_VOICES = [
     ("serena", "Serena — gentle"), ("vivian", "Vivian — bright"),
     ("ryan", "Ryan — lively"), ("aiden", "Aiden — clear"),
 ]
-KITTEN_VOICES = [
-    ("Bella", "Bella"), ("Luna", "Luna"), ("Rosie", "Rosie"), ("Kiki", "Kiki"),
-    ("Jasper", "Jasper"), ("Bruno", "Bruno"), ("Hugo", "Hugo"), ("Leo", "Leo"),
+# Kitten TTS 2 (KittenML, September 2026). The full model has 1.7 billion
+# parameters and voices made for stories; the small models are tiny and quick.
+KITTEN2_VOICES = [
+    ("FairytaleNarratorWhimsical", "Fairytale narrator"), ("GrandmaBedtimeStory", "Grandma, bedtime story"),
+    ("AudiobookNarratorFemale", "Audiobook narrator"), ("WeatherPresenterCheerful", "Cheerful presenter"),
+    ("Bruno", "Bruno"), ("Kiki", "Kiki"), ("Luna", "Luna"), ("Rosie", "Rosie"), ("Bella", "Bella"),
+    ("Hugo", "Hugo"), ("Jasper", "Jasper"), ("Leo", "Leo"),
+    ("Eleanor", "Eleanor"), ("Grace", "Grace"), ("Willow", "Willow"), ("Otis", "Otis"),
 ]
+# English voices that all three small models share, then those only some have.
+KITTEN2S_VOICES = [
+    ("Eleanor", "Eleanor"), ("Edith", "Edith"), ("Otis", "Otis"),
+    ("Grace", "Grace — not in Pico"), ("Serena", "Serena — not in Pico"), ("Iris", "Iris — not in Pico"),
+    ("Martha", "Martha — not in Pico"), ("Vincent", "Vincent — not in Pico"),
+    ("Max", "Max — not in Pico"), ("Danny", "Danny — not in Pico"),
+]
+_KITTEN2S_PICO = {"Eleanor", "Edith", "Otis", "Frank"}
+KITTEN2_PYTHON = Path(os.environ.get("MOO_LOCAL_KITTEN2_PYTHON", str(Path.home() / ".moo-kitten2-venv" / "bin" / "python")))
+_kitten2 = None  # the worker process
+
+
+def _kitten2_ready() -> bool:
+    return KITTEN2_PYTHON.exists() and _cached("KittenML/kitten-tts-2")
+
+
+def _kitten2s_ready() -> bool:
+    return KITTEN2_PYTHON.exists() and _cached("KittenML/kitten-tts-2-nano")
+
+
+def _kitten2_say(text: str, voice: str, repo: str) -> tuple[int, np.ndarray]:
+    """A voice from the Kitten TTS 2 worker (kitten2_worker.py), which runs
+    in its own Python environment."""
+    global _kitten2
+    import subprocess
+    import tempfile
+
+    full = repo == "KittenML/kitten-tts-2"
+    allowed = KITTEN2_VOICES if full else KITTEN2S_VOICES
+    if voice not in {v for v, _ in allowed} or (repo.endswith("-pico") and voice not in _KITTEN2S_PICO):
+        voice = allowed[0][0]
+    if _kitten2 is None or _kitten2.poll() is not None:
+        _kitten2 = subprocess.Popen(
+            [str(KITTEN2_PYTHON), str(Path(__file__).with_name("kitten2_worker.py"))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+        )
+        if not _kitten2.stdout.readline():
+            raise RuntimeError("Kitten TTS 2 worker did not start")
+        log.info("kitten 2 worker started")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = str(Path(tmp) / "say.wav")
+        _kitten2.stdin.write(json.dumps({"repo": repo, "text": text, "voice": voice, "out": out}) + "\n")
+        _kitten2.stdin.flush()
+        answer = json.loads(_kitten2.stdout.readline() or '{"ok": false, "error": "worker stopped"}')
+        if not answer.get("ok"):
+            raise RuntimeError(f"Kitten TTS 2: {answer.get('error')}")
+        with wave.open(out, "rb") as wf:
+            return wf.getframerate(), np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
 
 
 def _cached(repo: str) -> bool:
@@ -422,10 +482,10 @@ def _cached(repo: str) -> bool:
 # Each voice model's own quality settings (id, label, what it means here).
 # The last one that is installed is the default, as before.
 VOICE_QUALITIES = {
-    "kitten": [
-        ("nano", "Nano — 15M, quickest", "mlx-community/kitten-tts-nano-0.8"),
-        ("micro", "Micro — 40M", "mlx-community/kitten-tts-micro-0.8"),
-        ("mini", "Mini — 80M, best", "mlx-community/kitten-tts-mini-0.8"),
+    "kitten2s": [
+        ("pico", "Pico — 7M, quickest", "KittenML/kitten-tts-2-pico"),
+        ("nano", "Nano — 17M", "KittenML/kitten-tts-2-nano"),
+        ("mini", "Mini — 82M, best", "KittenML/kitten-tts-2-mini"),
     ],
     "supertonic": [
         ("fast", "Fast — 3 steps", 3),
@@ -437,7 +497,7 @@ VOICE_QUALITIES = {
         ("large", "Large — 1.7B, richer, slower", "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"),
     ],
 }
-_DEFAULT_QUALITY = {"kitten": "mini", "supertonic": "fine", "qwen3": "small"}
+_DEFAULT_QUALITY = {"kitten2s": "nano", "supertonic": "fine", "qwen3": "small"}
 
 
 def _qualities(engine: str) -> list[tuple]:
@@ -456,17 +516,13 @@ def _qwen3_ready() -> bool:
     return _orpheus_ready() and _cached("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
 
-def _kitten_ready() -> bool:
-    return _orpheus_ready() and _cached("mlx-community/kitten-tts-mini-0.8")
-
-
 def _orpheus_say(text: str, voice: str, engine: str = "orpheus", repo: str | None = None) -> tuple[int, np.ndarray]:
     """A voice from the MLX worker. Orpheus is the expressive one that
     understands <giggle>, <laugh>, <chuckle>, <sigh>, <gasp>, <groan>, <yawn>
-    written into the text; Qwen3 reads as a storyteller; Kitten is tiny."""
+    written into the text; Qwen3 reads as a storyteller."""
     import tempfile
 
-    allowed = {"orpheus": ORPHEUS_VOICES, "qwen3": QWEN3_VOICES, "kitten": KITTEN_VOICES}[engine]
+    allowed = {"orpheus": ORPHEUS_VOICES, "qwen3": QWEN3_VOICES}[engine]
     if voice not in {v for v, _ in allowed}:
         voice = allowed[0][0]
     with tempfile.TemporaryDirectory() as tmp:
@@ -673,12 +729,15 @@ async def options() -> dict:
     if _supertonic_ready():
         engines.append({"id": "supertonic", "label": "Supertonic — natural, quick"})
         voices_by_engine["supertonic"] = [{"id": v, "label": l} for v, l in SUPERTONIC_VOICES]
-    if _kitten_ready():
-        engines.insert(1, {"id": "kitten", "label": "Kitten — tiny and the fastest natural voice"})
-        voices_by_engine["kitten"] = [{"id": v, "label": l} for v, l in KITTEN_VOICES]
+    if _kitten2s_ready():
+        engines.insert(1, {"id": "kitten2s", "label": "Kitten 2 small — tiny and the fastest voice"})
+        voices_by_engine["kitten2s"] = [{"id": v, "label": l} for v, l in KITTEN2S_VOICES]
     if _kokoro_ready():
         engines.append({"id": "kokoro", "label": "Kokoro — natural, quick"})
         voices_by_engine["kokoro"] = [{"id": v, "label": l} for v, l in KOKORO_VOICES]
+    if _kitten2_ready():
+        engines.append({"id": "kitten2", "label": "Kitten 2 — story voices, about half the speech to make"})
+        voices_by_engine["kitten2"] = [{"id": v, "label": l} for v, l in KITTEN2_VOICES]
     if _qwen3_ready():
         engines.append({"id": "qwen3", "label": "Qwen3 — read as a storyteller, slower"})
         voices_by_engine["qwen3"] = [{"id": v, "label": l} for v, l in QWEN3_VOICES]
