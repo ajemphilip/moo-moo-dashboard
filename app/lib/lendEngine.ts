@@ -106,11 +106,12 @@ export const LISTEN_CHOICES: { id: string; label: string }[] = [
 ];
 
 export const VOICE_CHOICES: { id: string; label: string }[] = [
-  { id: "", label: "Automatic — Kitten on iPhone and iPad, Kokoro on computers" },
+  { id: "", label: "Automatic — Kitten mini on iPhone and iPad, Kokoro on computers" },
   { id: "kitten-nano", label: "Kitten nano — lightest, 24 MB, for phones" },
   { id: "kitten-micro", label: "Kitten micro — 41 MB, for phones" },
   { id: "kitten-mini", label: "Kitten mini — 78 MB, best Kitten" },
   { id: "kokoro", label: "Kokoro — most natural, too heavy for phones" },
+  { id: "kokoro-gpu", label: "Kokoro on the graphics chip — a try for phones, 160 MB" },
 ];
 export const KITTEN_VOICES = ["Bruno", "Hugo", "Jasper", "Leo", "Kiki", "Luna", "Rosie", "Bella"];
 const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno" };
@@ -125,7 +126,7 @@ export function deviceChoice(): DeviceChoice {
 
 /** The voice model this device runs: a Kitten size, or "kokoro". */
 function voiceEngine(): string {
-  return deviceChoice().voice || (isIOS() ? "kitten-micro" : "kokoro");
+  return deviceChoice().voice || (isIOS() ? "kitten-mini" : "kokoro");
 }
 
 export function setDeviceChoice(c: Partial<DeviceChoice>) {
@@ -245,11 +246,12 @@ export async function loadModels(
     tts = { kitten: lib, model };
   } else if (!tts) {
     const { KokoroTTS } = await load(LIB.kokoro);
+    const gpu = wantVoice === "kokoro-gpu";
     onProgress({ part: "voice", text: "Loading Kokoro voice…", done: false });
-    mark("the Kokoro voice");
+    mark(gpu ? "the Kokoro voice on the graphics chip" : "the Kokoro voice");
     tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-      dtype: "q8",
-      device: "wasm",
+      dtype: gpu ? "fp16" : "q8",
+      device: gpu ? "webgpu" : "wasm",
       progress_callback: (p: any) => {
         if (p.status === "progress" && p.file)
           onProgress({ part: "voice", text: `${p.file} ${Math.round(p.progress)}%`, done: false });
@@ -367,15 +369,11 @@ async function runJob(job: Job): Promise<Record<string, unknown>> {
   throw new Error(`Unknown job ${job.kind}`);
 }
 
-/** Speak with Kitten. It takes up to about 500 characters at a time, so a
- *  longer part is spoken sentence by sentence and joined into one wav. */
+/** Speak with Kitten, sentence by sentence, joined into one wav. */
 async function kittenSpeak(text: string): Promise<ArrayBuffer> {
-  const pieces: string[] = [];
-  for (const sentence of text.match(/[^.!?]+[.!?]*\s*/g) ?? [text]) {
-    const last = pieces[pieces.length - 1];
-    if (last !== undefined && last.length + sentence.length <= 300) pieces[pieces.length - 1] = last + sentence;
-    else pieces.push(sentence);
-  }
+  // One sentence at a time: given several at once, Kitten runs them together
+  // without a pause ("scared of the dark one night a firefly came").
+  const pieces: string[] = text.match(/[^.!?]+[.!?]*\s*/g) ?? [text];
   const chunks: Uint8Array[] = [];
   let rate = 24000;
   for (const piece of pieces) {
@@ -387,7 +385,7 @@ async function kittenSpeak(text: string): Promise<ArrayBuffer> {
     const buf = new Uint8Array(await blob.arrayBuffer());
     rate = new DataView(buf.buffer).getUint32(24, true);
     chunks.push(buf.subarray(44)); // 16 bit mono samples after the wav header
-    chunks.push(new Uint8Array(Math.round(rate * 0.15) * 2)); // a short breath
+    chunks.push(new Uint8Array(Math.round(rate * 0.3) * 2)); // a breath between sentences
   }
   const size = chunks.reduce((n, c) => n + c.length, 0);
   const out = new Uint8Array(44 + size);
