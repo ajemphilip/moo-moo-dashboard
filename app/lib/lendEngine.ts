@@ -179,11 +179,15 @@ export async function loadModels(
   if (!asr) {
     const { pipeline } = await load(LIB.transformers);
     onProgress({ part: "speech", text: "Loading Whisper…", done: false });
-    mark(`the listening model ${asrId.split("/")[1]}`);
+    mark(`the listening model ${asrId.split("/")[1]}${isIOS() ? " (on the processor)" : ""}`);
     asrLoaded = asrId;
+    // On an iPhone or iPad the graphics chip is already full with the story
+    // model: Whisper loaded there closed the page (21 November 2026). There
+    // it runs on the processor, in its small 8 bit form.
+    const light = isIOS();
     asr = await pipeline("automatic-speech-recognition", asrId, {
-      device: "webgpu",
-      dtype: { encoder_model: "fp32", decoder_model_merged: "q4" },
+      device: light ? "wasm" : "webgpu",
+      dtype: light ? "q8" : { encoder_model: "fp32", decoder_model_merged: "q4" },
       progress_callback: (p: any) => {
         if (p.status === "progress" && p.file)
           onProgress({ part: "speech", text: `${p.file} ${Math.round(p.progress)}%`, done: false });
