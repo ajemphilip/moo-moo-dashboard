@@ -262,8 +262,16 @@ async def speech(request: Request) -> Response:
     with _voice_lock:
         if engine != "chatterbox":
             _free_chatterbox()
+        orpheus_audio = None
         if engine == "orpheus" and _orpheus_ready():
-            rate, pcm = _orpheus_say(text, voice_id)
+            try:
+                orpheus_audio = _orpheus_say(text, voice_id)
+            except Exception:
+                log.warning("orpheus failed twice, this line in Kokoro", exc_info=True)
+                text = re.sub(r"<[a-z]+>", "", text).strip()
+                voice_id = KOKORO_VOICE
+        if orpheus_audio is not None:
+            rate, pcm = orpheus_audio
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
@@ -345,25 +353,53 @@ ORPHEUS_VOICES = [
     ("mia", "Mia — gentle"), ("zoe", "Zoe — young"), ("leo", "Leo — friendly"),
     ("dan", "Dan — easygoing"), ("zac", "Zac — cheerful"),
 ]
-_orpheus = None
+_orpheus = None  # the worker process
+
+
+def _orpheus_worker():
+    """Orpheus runs in its own process (orpheus_worker.py). Inside this
+    process it shared the GPU with Whisper and the GPU timed out."""
+    global _orpheus
+    import subprocess
+    import sys
+
+    if _orpheus is None or _orpheus.poll() is not None:
+        _orpheus = subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("orpheus_worker.py"))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+        )
+        ready = _orpheus.stdout.readline()
+        if not ready:
+            raise RuntimeError("Orpheus worker did not start")
+        log.info("orpheus worker started")
+    return _orpheus
 
 
 def _orpheus_say(text: str, voice: str) -> tuple[int, np.ndarray]:
     """Orpheus, the expressive voice that understands <giggle>, <laugh>,
     <chuckle>, <sigh>, <gasp>, <groan>, <yawn> written into the text."""
-    global _orpheus
-    from mlx_audio.tts.utils import load_model
+    import tempfile
 
-    if _orpheus is None:
-        _orpheus = load_model(ORPHEUS_MODEL)
     if voice not in {v for v, _ in ORPHEUS_VOICES}:
         voice = "tara"
-    chunks, rate = [], 24000
-    for r in _orpheus.generate(text=text, voice=voice, verbose=False):
-        chunks.append(np.array(r.audio))
-        rate = r.sample_rate
-    audio = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros(1, np.float32)
-    return rate, (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = str(Path(tmp) / "say.wav")
+        # With Gemma 12B also in memory on a 16 GB Mac the GPU sometimes
+        # times out once; the second try nearly always works.
+        for attempt in (1, 2):
+            worker = _orpheus_worker()
+            worker.stdin.write(json.dumps({"text": text, "voice": voice, "out": out}) + "\n")
+            worker.stdin.flush()
+            answer = json.loads(worker.stdout.readline() or '{"ok": false, "error": "worker stopped"}')
+            if answer.get("ok"):
+                break
+            log.warning("orpheus try %d failed: %s", attempt, answer.get("error"))
+        else:
+            raise RuntimeError(f"Orpheus: {answer.get('error')}")
+        with wave.open(out, "rb") as wf:
+            rate = wf.getframerate()
+            pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+    return rate, pcm
 
 
 @app.get("/moo/options")
