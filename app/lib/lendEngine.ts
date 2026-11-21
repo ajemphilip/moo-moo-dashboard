@@ -45,7 +45,9 @@ export function isIOS(): boolean {
   return /iPhone|iPad|iPod/.test(navigator.userAgent);
 }
 
-async function pickLlm(): Promise<string> {
+export type Quality = "auto" | "fast" | "better";
+
+async function pickLlm(quality: Quality = "auto"): Promise<string> {
   // Phones get the 1B model, computers the 3B one. Use 16-bit shaders only
   // where the graphics chip supports them.
   let f16 = false;
@@ -56,14 +58,24 @@ async function pickLlm(): Promise<string> {
     /* keep f32 */
   }
   const memory = (navigator as any).deviceMemory as number | undefined;
-  const small = isIOS() || (memory !== undefined && memory < 8);
+  const small =
+    quality === "fast" || (quality === "auto" && (isIOS() || (memory !== undefined && memory < 8)));
   const size = small ? "1B" : "3B";
   return `Llama-3.2-${size}-Instruct-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`;
 }
 
-export async function loadModels(onProgress: (p: LoadProgress) => void): Promise<string> {
-  const llmId = await pickLlm();
+let llmLoaded = "";
 
+export async function loadModels(
+  onProgress: (p: LoadProgress) => void,
+  quality: Quality = "auto"
+): Promise<string> {
+  const llmId = await pickLlm(quality);
+
+  if (llm && llmLoaded !== llmId) {
+    await llm.unload?.();
+    llm = null;
+  }
   if (!llm) {
     const webllm = await load(LIB.webllm);
     onProgress({ part: "story", text: `Loading ${llmId}…`, done: false });
@@ -72,6 +84,7 @@ export async function loadModels(onProgress: (p: LoadProgress) => void): Promise
         onProgress({ part: "story", text: r.text, done: false }),
     });
   }
+  llmLoaded = llmId;
   onProgress({ part: "story", text: `${llmId} ready`, done: true });
 
   if (!asr) {
@@ -199,7 +212,8 @@ async function runJob(job: Job): Promise<Record<string, unknown>> {
     return { text: (r?.text ?? "").trim() };
   }
   if (job.kind === "speak") {
-    const audio = await tts.generate(String(p.text ?? ""), { voice: "af_heart" });
+    const voice = typeof p.voice === "string" && /^[ab][fm]_[a-z]+$/.test(p.voice) ? p.voice : "af_heart";
+    const audio = await tts.generate(String(p.text ?? ""), { voice });
     return { wav_b64: bytesToB64(audio.toWav()) };
   }
   throw new Error(`Unknown job ${job.kind}`);
@@ -250,4 +264,117 @@ export async function lend(name: string, device: string, stop: () => boolean, ev
     await fetch("/engine/result", { method: "POST", headers: HEADERS, body: JSON.stringify(body) });
     ev.onJob(null, (performance.now() - started) / 1000);
   }
+}
+
+
+/* --------------------------------------------------------------- controller */
+// One engine per browser tab, shared by every page of the Moo website, so the
+// device keeps working for Moo while the parent moves between screens.
+
+export interface EngineState {
+  status: "off" | "loading" | "ready" | "working" | "error";
+  progress: Record<string, LoadProgress>;
+  model: string;
+  jobsDone: number;
+  lastSeconds: number | null;
+  current: Job | null;
+  note: string | null;
+}
+
+const THIS_DEVICE_KEY = "moo_this_device";
+let state: EngineState = {
+  status: "off", progress: {}, model: "", jobsDone: 0, lastSeconds: null, current: null, note: null,
+};
+const listeners = new Set<(s: EngineState) => void>();
+let stopFlag = false;
+let running = false;
+let wake: any = null;
+
+function update(patch: Partial<EngineState>) {
+  state = { ...state, ...patch };
+  listeners.forEach((l) => l(state));
+}
+
+export function engineState(): EngineState {
+  return state;
+}
+
+export function subscribe(fn: (s: EngineState) => void): () => void {
+  listeners.add(fn);
+  fn(state);
+  return () => listeners.delete(fn);
+}
+
+export function thisDeviceWanted(): boolean {
+  try {
+    return localStorage.getItem(THIS_DEVICE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function canRunHere(): string | null {
+  if (typeof window === "undefined") return "Not in a browser";
+  if (process.env.NEXT_PUBLIC_GITHUB_PAGES === "true") return "Open the Moo's own address to use this device.";
+  if (!window.isSecureContext) return "This needs the Moo's secure address (https).";
+  if (!(navigator as any).gpu) return "This browser has no WebGPU, so it cannot run Moo's AI.";
+  return null;
+}
+
+export async function startThisDevice(name: string, quality: Quality = "auto") {
+  try {
+    localStorage.setItem(THIS_DEVICE_KEY, "1");
+  } catch {
+    /* not stored */
+  }
+  if (running) return;
+  const problem = canRunHere();
+  if (problem) {
+    update({ status: "error", note: problem });
+    return;
+  }
+  running = true;
+  stopFlag = false;
+  try {
+    wake = await (navigator as any).wakeLock?.request("screen");
+  } catch {
+    /* keep going without */
+  }
+  update({ status: "loading", note: null });
+  try {
+    const id = await loadModels((p) => update({ progress: { ...state.progress, [p.part]: p } }), quality);
+    update({ model: id, status: "ready" });
+  } catch (e: any) {
+    running = false;
+    update({ status: "error", note: `Could not load the models: ${e?.message ?? e}` });
+    return;
+  }
+  lend(name, navigator.userAgent.slice(0, 120), () => stopFlag, {
+    onJob: (job, seconds) => {
+      if (job) update({ current: job, status: "working" });
+      else
+        update({
+          current: null,
+          status: "ready",
+          jobsDone: state.jobsDone + 1,
+          lastSeconds: seconds !== undefined ? Math.round(seconds * 10) / 10 : state.lastSeconds,
+        });
+    },
+    onError: (m) => update({ note: m }),
+  })
+    .catch((e) => update({ status: "error", note: String(e?.message ?? e) }))
+    .finally(() => {
+      running = false;
+    });
+}
+
+export function stopThisDevice() {
+  try {
+    localStorage.removeItem(THIS_DEVICE_KEY);
+  } catch {
+    /* ignore */
+  }
+  stopFlag = true;
+  wake?.release?.().catch(() => {});
+  update({ status: "off", current: null });
 }

@@ -15,6 +15,7 @@ so both are reached with the same OpenAI client. Only the address changes:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 LOCAL_KEY = "moo-local"  # Moo Local needs no key; the client library wants one
@@ -39,21 +40,83 @@ def ai_ready(cfg: dict[str, Any]) -> bool:
 
 
 def make_client(cfg: dict[str, Any], timeout: float = 120.0):
-    """Return an OpenAI client for the chosen AI. Raises ValueError if not set up."""
-    if ai_mode(cfg) == "browser":
-        return BrowserClient(timeout=timeout)
+    """Return a client for the chosen AI, with the models and voice chosen on
+    the AI engine screen applied. Raises ValueError if not set up."""
+    ai = cfg.get("ai") or {}
+    mode = ai_mode(cfg)
+    if mode == "browser":
+        return Configured(BrowserClient(timeout=timeout), voice=ai.get("voice"))
 
     import openai
 
-    if ai_mode(cfg) == "local":
+    if mode == "local":
         url = local_url(cfg)
         if not url:
             raise ValueError("Local AI is chosen, but no computer is selected")
-        return openai.OpenAI(base_url=url, api_key=LOCAL_KEY, timeout=timeout)
+        base = openai.OpenAI(base_url=url, api_key=LOCAL_KEY, timeout=timeout)
+        return Configured(
+            base,
+            chat_model=ai.get("story_model"),
+            speech_model=ai.get("voice_engine"),
+            voice=ai.get("voice"),
+            extra_speech={"expressiveness": ai.get("expressiveness", 0.6)},
+        )
     key = cfg.get("openai_api_key")
     if not key:
         raise ValueError("No OpenAI API key configured")
-    return openai.OpenAI(api_key=key, timeout=timeout)
+    base = openai.OpenAI(api_key=key, timeout=timeout)
+    speech_model = ai.get("cloud_voice_model")
+    return Configured(
+        base,
+        chat_model=ai.get("cloud_story_model"),
+        speech_model=speech_model,
+        # gpt-4o-mini-tts can be told how to speak.
+        extra_speech=(
+            {"instructions": STORYTELLER_INSTRUCTIONS} if speech_model == "gpt-4o-mini-tts" else None
+        ),
+    )
+
+
+STORYTELLER_INSTRUCTIONS = (
+    "You are Moo, a warm and playful storyteller for young children. Speak with "
+    "lively expression: excited at surprises, gentle and soft at cosy moments, "
+    "a little hushed for suspense, with clear words and natural pauses."
+)
+
+
+class Configured:
+    """Wraps a client so the chosen story model, voice model and voice are used,
+    whatever names the story code passes. Everything else goes straight through."""
+
+    def __init__(self, client, chat_model=None, speech_model=None, voice=None, extra_speech=None):
+        self._c = client
+        self.moderations = client.moderations
+        self.models = getattr(client, "models", None)
+        chat_create = client.chat.completions.create
+        speech_create = client.audio.speech.create
+
+        def chat(**kw):
+            if chat_model:
+                kw["model"] = chat_model
+            return chat_create(**kw)
+
+        def speech(**kw):
+            if speech_model:
+                kw["model"] = speech_model
+            if voice:
+                kw["voice"] = voice
+            if extra_speech:
+                if isinstance(self._c, BrowserClient):
+                    kw.update(extra_speech)
+                else:
+                    kw["extra_body"] = {**kw.get("extra_body", {}), **extra_speech}
+            return speech_create(**kw)
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=chat))
+        self.audio = SimpleNamespace(
+            transcriptions=client.audio.transcriptions,
+            speech=SimpleNamespace(create=speech),
+        )
 
 
 # --- a lent browser ---------------------------------------------------------------
@@ -62,7 +125,6 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from types import SimpleNamespace
 
 ENGINE_SUBMIT = "http://127.0.0.1:8000/engine/submit"
 
@@ -120,7 +182,7 @@ class BrowserClient:
         return SimpleNamespace(text=res.get("text", ""))
 
     def _speak(self, model=None, voice=None, input="", response_format=None, **_kw):
-        res = _submit("speak", {"text": input}, self.timeout)
+        res = _submit("speak", {"text": input, "voice": voice}, self.timeout)
         return _Speech(base64.b64decode(res.get("wav_b64", "")))
 
     def _moderate(self, model=None, input="", **_kw):

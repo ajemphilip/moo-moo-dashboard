@@ -141,6 +141,29 @@ export interface AiSettings {
   local_name: string | null;
   has_openai_key: boolean;
   ready: boolean;
+  story_model: string | null;
+  voice_engine: string | null;
+  voice: string | null;
+  expressiveness: number;
+  browser_quality: "auto" | "fast" | "better";
+  cloud_story_model: string | null;
+  cloud_voice_model: string | null;
+}
+
+export interface AiChoice {
+  id: string;
+  label: string;
+}
+
+export interface AiOptions {
+  mode: "cloud" | "local" | "browser";
+  story_models?: AiChoice[];
+  default_story_model?: string;
+  voice_engines?: AiChoice[];
+  voices?: AiChoice[];
+  qualities?: AiChoice[];
+  voice_is_preference?: boolean;
+  unreachable?: boolean;
 }
 
 export interface AiEngine {
@@ -278,6 +301,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode, local_url, local_name }),
     }),
+  aiUpdate: (changes: Partial<AiSettings>) =>
+    request<AiSettings>("/ai", { method: "POST", body: JSON.stringify(changes) }),
+  aiOptions: () => request<AiOptions>("/ai/options"),
   aiDiscover: () => request<{ engines: AiEngine[] }>("/ai/discover"),
   aiTest: () => request<AiTest>("/ai/test", { method: "POST", body: "{}" }),
   engineStatus: () =>

@@ -74,6 +74,7 @@ ALLOWED_ENDPOINTS: set[tuple[str, str]] = {
     ("POST", "/ai"),
     ("GET", "/ai/discover"),
     ("POST", "/ai/test"),
+    ("GET", "/ai/options"),
 }
 
 

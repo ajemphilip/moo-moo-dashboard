@@ -1,7 +1,9 @@
 """Choosing the AI engine: OpenAI in the cloud, or Moo Local on a computer.
 
 GET  /ai           — the current choice
-POST /ai           — {"mode": "cloud" | "local", "local_url"?, "local_name"?}
+POST /ai           — {"mode"?, "local_url"?, "local_name"?, and the choices below}
+GET  /ai/options   — what can be chosen for the current engine: story models,
+                     voice engines, voices and quality
 GET  /ai/discover  — Moo Local computers announced on the home network
 POST /ai/test      — a quick story line and voice through the chosen engine
 """
@@ -38,6 +40,13 @@ def _settings() -> AiSettings:
         local_name=ai.get("local_name"),
         has_openai_key=bool(cfg.get("openai_api_key")),
         ready=ai_ready(cfg),
+        story_model=ai.get("story_model"),
+        voice_engine=ai.get("voice_engine"),
+        voice=ai.get("voice"),
+        expressiveness=float(ai.get("expressiveness", 0.6)),
+        browser_quality=ai.get("browser_quality", "auto"),
+        cloud_story_model=ai.get("cloud_story_model"),
+        cloud_voice_model=ai.get("cloud_voice_model"),
     )
 
 
@@ -48,11 +57,11 @@ def get_ai() -> AiSettings:
 
 @router.post("", response_model=AiSettings)
 def post_ai(req: AiUpdateRequest) -> AiSettings:
-    update: dict = {"mode": req.mode}
-    if req.local_url is not None:
-        update["local_url"] = req.local_url.rstrip("/")
-    if req.local_name is not None:
-        update["local_name"] = req.local_name
+    update = req.model_dump(exclude_none=True)
+    if "local_url" in update:
+        update["local_url"] = update["local_url"].rstrip("/")
+    if "expressiveness" in update:
+        update["expressiveness"] = max(0.25, min(1.0, float(update["expressiveness"])))
     moo_config.update_config({"ai": update})
     # The storyteller reads the engine when it starts.
     if service_control.is_assistant_running():
@@ -99,6 +108,17 @@ def discover() -> AiDiscoverResponse:
     return AiDiscoverResponse(engines=list(engines.values()))
 
 
+def _play_on_moo(cfg: dict, client, wav: bytes) -> None:
+    """Play the test line through the Moo's own speaker, so the voice can be heard."""
+    try:
+        from assistant.audio import AudioIO
+
+        audio_cfg = cfg.get("audio", {}) or {}
+        AudioIO(client, output_device=audio_cfg.get("output_index"))._play_wav(wav)
+    except Exception:
+        logger.warning("could not play the test line on the Moo", exc_info=True)
+
+
 @router.post("/test", response_model=AiTestResponse)
 def test() -> AiTestResponse:
     """One short line from the story model and the same line as Moo's voice."""
@@ -106,22 +126,30 @@ def test() -> AiTestResponse:
 
     cfg = moo_config.load_config()
     try:
-        client = make_client(cfg, timeout=60)
+        client = make_client(cfg, timeout=200)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     started = time.time()
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": "Say hello to a child in one short, happy sentence."}],
+            messages=[{
+                "role": "user",
+                "content": "You are Moo, a storyteller cow. Say one short, happy, excited "
+                "sentence to a child about the story you are going to tell. Reply with only that sentence.",
+            }],
             max_tokens=40,
         )
         line = (resp.choices[0].message.content or "").strip()
         story_s = time.time() - started
         t = time.time()
-        speech = client.audio.speech.create(model="tts-1", voice="sage", input=line, response_format="wav")
+        prefs = cfg.get("preferences", {}) or {}
+        speech = client.audio.speech.create(
+            model="tts-1", voice=prefs.get("tts_voice", "sage"), input=line, response_format="wav"
+        )
         wav = speech.read() if hasattr(speech, "read") else speech.content
         voice_s = time.time() - t
+        _play_on_moo(cfg, client, wav)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"The {ai_mode(cfg)} AI did not answer: {exc}") from exc
     return AiTestResponse(
@@ -131,3 +159,63 @@ def test() -> AiTestResponse:
         voice_seconds=round(voice_s, 1),
         voice_bytes=len(wav),
     )
+
+
+# Voices that both Moo Local (kokoro-onnx) and the browser (kokoro-js) have.
+KOKORO_VOICES = [
+    {"id": "af_heart", "label": "Heart — warm"},
+    {"id": "af_bella", "label": "Bella — bright"},
+    {"id": "af_nicole", "label": "Nicole — soft"},
+    {"id": "af_sarah", "label": "Sarah — calm"},
+    {"id": "af_sky", "label": "Sky — light"},
+    {"id": "bf_emma", "label": "Emma — British"},
+    {"id": "bf_isabella", "label": "Isabella — British"},
+    {"id": "am_puck", "label": "Puck — playful"},
+    {"id": "am_michael", "label": "Michael — gentle"},
+    {"id": "bm_george", "label": "George — British storyteller"},
+]
+
+OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
+
+
+@router.get("/options")
+def options() -> dict:
+    """What can be chosen for the engine in use, for the AI engine screen."""
+    from assistant.ai_client import ai_mode, local_url
+
+    cfg = moo_config.load_config()
+    mode = ai_mode(cfg)
+    if mode == "cloud":
+        return {
+            "mode": mode,
+            "story_models": [
+                {"id": "gpt-4o-mini", "label": "GPT-4o mini — quick and cheap"},
+                {"id": "gpt-4o", "label": "GPT-4o — richer stories, costs more"},
+            ],
+            "voice_engines": [
+                {"id": "tts-1", "label": "Standard voice"},
+                {"id": "gpt-4o-mini-tts", "label": "Expressive storyteller voice"},
+            ],
+            "voices": [{"id": v, "label": v.capitalize()} for v in OPENAI_VOICES],
+            "voice_is_preference": True,
+        }
+    if mode == "browser":
+        return {
+            "mode": mode,
+            "qualities": [
+                {"id": "auto", "label": "Automatic — small on phones, larger on computers"},
+                {"id": "fast", "label": "Fast — Llama 3.2 1B, about 1 GB"},
+                {"id": "better", "label": "Better — Llama 3.2 3B, about 2.5 GB, computers"},
+            ],
+            "voice_engines": [{"id": "kokoro", "label": "Kokoro"}],
+            "voices": KOKORO_VOICES,
+        }
+    url = local_url(cfg) or ""
+    base = url[: -len("/v1")] if url.endswith("/v1") else url
+    try:
+        with urllib.request.urlopen(f"{base}/moo/options", timeout=5) as r:
+            data = json.loads(r.read())
+    except Exception:
+        data = {"story_models": [], "voice_engines": [], "voices": [], "unreachable": True}
+    data["mode"] = mode
+    return data

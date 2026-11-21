@@ -61,18 +61,25 @@ _voice_lock = threading.Lock()
 _chat_model: str | None = None
 
 
-async def _model() -> str:
-    """The best story model that is installed: Gemma 3 12B, else Llama 3.2 3B."""
-    global _chat_model
-    if _chat_model:
-        return _chat_model
+async def _installed() -> list[str]:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            names = {m.get("name") for m in (await client.get(f"{OLLAMA}/api/tags")).json().get("models", [])}
-        _chat_model = CHAT_MODEL if CHAT_MODEL in names else FALLBACK_CHAT_MODEL
-        log.info("story model: %s", _chat_model)
+            tags = (await client.get(f"{OLLAMA}/api/tags")).json()
+        return [m.get("name") for m in tags.get("models", []) if m.get("name")]
     except Exception:
-        return FALLBACK_CHAT_MODEL
+        return []
+
+
+async def _model(requested: str | None = None) -> str:
+    """The story model to use: the one the Moo asked for if it is installed here,
+    else Gemma 3 12B, else Llama 3.2 3B."""
+    global _chat_model
+    names = await _installed()
+    if requested and requested in names:
+        return requested
+    if not _chat_model:
+        _chat_model = CHAT_MODEL if CHAT_MODEL in names else FALLBACK_CHAT_MODEL
+        log.info("default story model: %s", _chat_model)
     return _chat_model
 
 
@@ -81,7 +88,9 @@ async def _model() -> str:
 @app.post("/v1/chat/completions")
 async def chat(request: Request) -> JSONResponse:
     body = await request.json()
-    body["model"] = await _model()  # whatever the Moo asked for, the local model answers
+    # The Moo names a model it chose on its AI engine screen, or an OpenAI name
+    # (gpt-4o-mini) when nothing was chosen; then the default model answers.
+    body["model"] = await _model(body.get("model"))
     body.pop("stream", None)
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(f"{OLLAMA}/v1/chat/completions", json=body)
@@ -193,6 +202,44 @@ def _get_kokoro():
     return _kokoro
 
 
+_chatterbox = None
+
+
+def _chatterbox_say(text: str, expressiveness: float) -> tuple[int, np.ndarray]:
+    """Chatterbox, the expressive voice. `expressiveness` 0.25 calm to 1.0 dramatic."""
+    global _chatterbox
+    import torch
+    from chatterbox.tts import ChatterboxTTS
+
+    if _chatterbox is None:
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        _chatterbox = ChatterboxTTS.from_pretrained(device=device)
+    x = max(0.25, min(1.0, expressiveness))
+    wav = _chatterbox.generate(text, exaggeration=x, cfg_weight=0.5 if x < 0.7 else 0.3)
+    audio = wav.squeeze().detach().cpu().numpy()
+    return _chatterbox.sr, (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+
+
+def _free_chatterbox() -> None:
+    """Chatterbox holds several GB. Let it go as soon as another voice is used,
+    so the story model has the memory back."""
+    global _chatterbox
+    if _chatterbox is None:
+        return
+    _chatterbox = None
+    try:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
+    log.info("chatterbox unloaded")
+
+
 def _kokoro_ready() -> bool:
     return (KOKORO_DIR / "kokoro-v1.0.onnx").exists() and (KOKORO_DIR / "voices-v1.0.bin").exists()
 
@@ -204,10 +251,24 @@ async def speech(request: Request) -> Response:
     if not text:
         raise HTTPException(status_code=400, detail="No text")
     started = time.time()
+    engine = str(body.get("model") or "")
+    voice_id = str(body.get("voice") or "")
+    if voice_id not in {v for v, _ in KOKORO_VOICES}:
+        voice_id = KOKORO_VOICE
     buf = io.BytesIO()
     with _voice_lock:
-        if _kokoro_ready():
-            samples, rate = _get_kokoro().create(text, voice=KOKORO_VOICE, speed=1.0, lang="en-us")
+        if engine != "chatterbox":
+            _free_chatterbox()
+        if engine == "chatterbox" and _chatterbox_ready():
+            rate, pcm = _chatterbox_say(text, float(body.get("expressiveness") or 0.6))
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(pcm.tobytes())
+        elif _kokoro_ready():
+            lang = "en-gb" if voice_id.startswith("b") else "en-us"
+            samples, rate = _get_kokoro().create(text, voice=voice_id, speed=1.0, lang=lang)
             pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
@@ -220,6 +281,59 @@ async def speech(request: Request) -> Response:
                 voice.synthesize_wav(text, wf)
     log.info("spoke %d characters in %.1fs", len(text), time.time() - started)
     return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+# --- what can be chosen here ---------------------------------------------------
+
+# Kokoro voices offered on the Moo's AI engine screen (id, label).
+KOKORO_VOICES = [
+    ("af_heart", "Heart — warm"),
+    ("af_bella", "Bella — bright"),
+    ("af_nicole", "Nicole — soft"),
+    ("af_sarah", "Sarah — calm"),
+    ("af_sky", "Sky — light"),
+    ("bf_emma", "Emma — British"),
+    ("bf_isabella", "Isabella — British"),
+    ("am_puck", "Puck — playful"),
+    ("am_michael", "Michael — gentle"),
+    ("bm_george", "George — British storyteller"),
+]
+
+_STORY_LABELS = {
+    "gemma3:12b": "Gemma 3 12B — best stories, about 6 s",
+    "llama3.2:3b": "Llama 3.2 3B — fastest, simpler stories",
+    "llama3.1:8b": "Llama 3.1 8B — good and quick",
+    "qwen2.5:7b": "Qwen 2.5 7B — good and quick",
+}
+
+
+def _chatterbox_ready() -> bool:
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("chatterbox") is not None
+    except Exception:
+        return False
+
+
+@app.get("/moo/options")
+async def options() -> dict:
+    """Story models installed here, voice engines and voices, for the Moo's screen."""
+    names = [n for n in await _installed() if "coder" not in n and "embed" not in n]
+    engines = [{"id": "kokoro", "label": "Kokoro — clear and quick"}] if _kokoro_ready() else []
+    if _chatterbox_ready():
+        engines.append({
+            "id": "chatterbox",
+            "label": "Chatterbox — most expressive, very slow here (20–60 s a sentence)",
+        })
+    if not engines:
+        engines.append({"id": "piper", "label": "Piper — basic"})
+    return {
+        "story_models": [{"id": n, "label": _STORY_LABELS.get(n, n)} for n in names],
+        "default_story_model": await _model(),
+        "voice_engines": engines,
+        "voices": [{"id": v, "label": l} for v, l in KOKORO_VOICES] if _kokoro_ready() else [],
+    }
 
 
 # --- status ------------------------------------------------------------------
