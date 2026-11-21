@@ -19,7 +19,9 @@ import {
   clearCrash,
   crashedWhileLoading,
   deviceChoice,
+  KITTEN_VOICES,
   LISTEN_CHOICES,
+  VOICE_CHOICES,
   setDeviceChoice,
   STORY_CHOICES,
   startThisDevice,
@@ -83,7 +85,7 @@ function AiPageInner() {
   const [test, setTest] = useState<AiTest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crashed, setCrashed] = useState<string | null>(null);
-  const [mine, setMine] = useState({ story: "", listen: "" });
+  const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno" });
   const [copied, setCopied] = useState(false);
   const [address, setAddress] = useState("");
 
@@ -176,7 +178,7 @@ function AiPageInner() {
   }
 
   // The models this device runs are kept on this device.
-  const chooseMine = (c: Partial<{ story: string; listen: string }>) => {
+  const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string }>) => {
     setDeviceChoice(c);
     setMine(deviceChoice());
     if (thisDevice) {
@@ -200,6 +202,9 @@ function AiPageInner() {
     }
   };
 
+  const usesKitten =
+    mine.voice.startsWith("kitten-") ||
+    (mine.voice === "" && typeof navigator !== "undefined" && /iPhone|iPad|iPod/.test(navigator.userAgent));
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
   const choice: Choice | null =
@@ -357,8 +362,22 @@ function AiPageInner() {
                 choices={LISTEN_CHOICES}
                 onChange={(v) => chooseMine({ listen: v })}
               />
+              <Select
+                label="Voice model on this device"
+                value={mine.voice}
+                choices={VOICE_CHOICES}
+                onChange={(v) => chooseMine({ voice: v })}
+              />
+              {usesKitten && (
+                <Select
+                  label="Voice on this device"
+                  value={mine.kittenVoice}
+                  choices={KITTEN_VOICES.map((v) => ({ id: v, label: v }))}
+                  onChange={(v) => chooseMine({ kittenVoice: v })}
+                />
+              )}
               <p className="text-xs text-moo-ink/60">
-                These two are remembered on this device only, so a phone and a computer can each have their own.
+                These are remembered on this device only, so a phone and a computer can each have their own.
               </p>
             </>
           )}
@@ -451,7 +470,7 @@ function AiPageInner() {
               onChange={(v) => save({ voice: v })}
             />
           )}
-          {!options.voices_by_engine && options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
+          {!options.voices_by_engine && !(options.mode === "browser" && !here && usesKitten) && options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
             settings?.voice_engine !== "chatterbox" && settings?.voice_engine !== "orpheus" && (
             <Select
               label="Voice"

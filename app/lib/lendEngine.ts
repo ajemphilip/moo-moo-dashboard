@@ -32,6 +32,8 @@ const LIB = {
   webllm: "https://esm.run/@mlc-ai/web-llm@0.2.79",
   transformers: "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5",
   kokoro: "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js",
+  // Kitten TTS written for phone browsers: no wasm, about 130 MB at its peak.
+  kitten: "https://cdn.jsdelivr.net/npm/kitten-tts-webgpu@0.1.1/dist-lib/index.js",
 };
 const load = (url: string): Promise<any> => import(/* webpackIgnore: true */ url);
 
@@ -72,6 +74,7 @@ async function pickLlm(quality: Quality = "auto", wanted = ""): Promise<string> 
 
 let llmLoaded = "";
 let asrLoaded = "";
+let ttsLoaded = "";
 
 /* ------------------------------------------------- choices kept on this device */
 
@@ -80,6 +83,8 @@ let asrLoaded = "";
 export interface DeviceChoice {
   story: string; // "" = follow the size preset
   listen: string; // "" = follow the size preset
+  voice: string; // "" = automatic: Kitten on iPhone and iPad, Kokoro elsewhere
+  kittenVoice: string; // the Kitten voice of this device
 }
 const CHOICE_KEY = "moo_device_models";
 const LOADING_KEY = "moo_device_loading";
@@ -100,12 +105,27 @@ export const LISTEN_CHOICES: { id: string; label: string }[] = [
   { id: "onnx-community/whisper-base.en", label: "Whisper base — hears better" },
 ];
 
+export const VOICE_CHOICES: { id: string; label: string }[] = [
+  { id: "", label: "Automatic — Kitten on iPhone and iPad, Kokoro on computers" },
+  { id: "kitten-nano", label: "Kitten nano — lightest, 24 MB, for phones" },
+  { id: "kitten-micro", label: "Kitten micro — 41 MB, for phones" },
+  { id: "kitten-mini", label: "Kitten mini — 78 MB, best Kitten" },
+  { id: "kokoro", label: "Kokoro — most natural, too heavy for phones" },
+];
+export const KITTEN_VOICES = ["Bruno", "Hugo", "Jasper", "Leo", "Kiki", "Luna", "Rosie", "Bella"];
+const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno" };
+
 export function deviceChoice(): DeviceChoice {
   try {
-    return { story: "", listen: "", ...JSON.parse(localStorage.getItem(CHOICE_KEY) || "{}") };
+    return { ...NO_CHOICE, ...JSON.parse(localStorage.getItem(CHOICE_KEY) || "{}") };
   } catch {
-    return { story: "", listen: "" };
+    return { ...NO_CHOICE };
   }
+}
+
+/** The voice model this device runs: a Kitten size, or "kokoro". */
+function voiceEngine(): string {
+  return deviceChoice().voice || (isIOS() ? "kitten-micro" : "kokoro");
 }
 
 export function setDeviceChoice(c: Partial<DeviceChoice>) {
@@ -206,7 +226,24 @@ export async function loadModels(
   }
   onProgress({ part: "speech", text: "Whisper ready", done: true });
 
-  if (!tts) {
+  const wantVoice = voiceEngine();
+  if (tts && ttsLoaded !== wantVoice) tts = null;
+  if (!tts && wantVoice.startsWith("kitten-")) {
+    // Kokoro closed the page on the iPhone 16 Pro even with the smallest
+    // story model (21 November 2026). Kitten runs on the graphics chip
+    // without wasm and needs far less memory.
+    const lib = await load(LIB.kitten);
+    const model = wantVoice.slice("kitten-".length);
+    onProgress({ part: "voice", text: `Loading the Kitten ${model} voice…`, done: false });
+    mark(`the Kitten ${model} voice`);
+    // The first sentence downloads the model and starts the engine.
+    await lib.textToSpeech("Hello.", {
+      model,
+      voice: deviceChoice().kittenVoice,
+      onProgress: (stage: string) => onProgress({ part: "voice", text: stage, done: false }),
+    });
+    tts = { kitten: lib, model };
+  } else if (!tts) {
     const { KokoroTTS } = await load(LIB.kokoro);
     onProgress({ part: "voice", text: "Loading Kokoro voice…", done: false });
     mark("the Kokoro voice");
@@ -219,7 +256,8 @@ export async function loadModels(
       },
     } as any);
   }
-  onProgress({ part: "voice", text: "Kokoro voice ready", done: true });
+  ttsLoaded = wantVoice;
+  onProgress({ part: "voice", text: "Voice ready", done: true });
   mark(null);
   return llmId;
 }
@@ -318,12 +356,50 @@ async function runJob(job: Job): Promise<Record<string, unknown>> {
     const r = await asr(audio);
     return { text: (r?.text ?? "").trim() };
   }
+  if (job.kind === "speak" && tts?.kitten) {
+    return { wav_b64: bytesToB64(await kittenSpeak(String(p.text ?? ""))) };
+  }
   if (job.kind === "speak") {
     const voice = typeof p.voice === "string" && /^[ab][fm]_[a-z]+$/.test(p.voice) ? p.voice : "af_heart";
     const audio = await tts.generate(String(p.text ?? ""), { voice });
     return { wav_b64: bytesToB64(audio.toWav()) };
   }
   throw new Error(`Unknown job ${job.kind}`);
+}
+
+/** Speak with Kitten. It takes up to about 500 characters at a time, so a
+ *  longer part is spoken sentence by sentence and joined into one wav. */
+async function kittenSpeak(text: string): Promise<ArrayBuffer> {
+  const pieces: string[] = [];
+  for (const sentence of text.match(/[^.!?]+[.!?]*\s*/g) ?? [text]) {
+    const last = pieces[pieces.length - 1];
+    if (last !== undefined && last.length + sentence.length <= 300) pieces[pieces.length - 1] = last + sentence;
+    else pieces.push(sentence);
+  }
+  const chunks: Uint8Array[] = [];
+  let rate = 24000;
+  for (const piece of pieces) {
+    if (!piece.trim()) continue;
+    const blob: Blob = await tts.kitten.textToSpeech(piece.trim(), {
+      model: tts.model,
+      voice: deviceChoice().kittenVoice,
+    });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    rate = new DataView(buf.buffer).getUint32(24, true);
+    chunks.push(buf.subarray(44)); // 16 bit mono samples after the wav header
+    chunks.push(new Uint8Array(Math.round(rate * 0.15) * 2)); // a short breath
+  }
+  const size = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(44 + size);
+  const v = new DataView(out.buffer);
+  const tag = (o: number, t: string) => [...t].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+  tag(0, "RIFF"); v.setUint32(4, 36 + size, true); tag(8, "WAVE"); tag(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  tag(36, "data"); v.setUint32(40, size, true);
+  let o = 44;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out.buffer;
 }
 
 /* -------------------------------------------------------------------- loop */
