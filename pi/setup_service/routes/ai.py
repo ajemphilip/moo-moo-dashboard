@@ -47,6 +47,7 @@ def _settings() -> AiSettings:
         voice=ai.get("voice"),
         expressiveness=float(ai.get("expressiveness", 0.6)),
         browser_quality=ai.get("browser_quality", "auto"),
+        clarity_db=float((cfg.get("audio") or {}).get("clarity_db", 12.0)),
         cloud_story_model=ai.get("cloud_story_model"),
         cloud_voice_model=ai.get("cloud_voice_model"),
     )
@@ -64,7 +65,11 @@ def post_ai(req: AiUpdateRequest) -> AiSettings:
         update["local_url"] = update["local_url"].rstrip("/")
     if "expressiveness" in update:
         update["expressiveness"] = max(0.25, min(1.0, float(update["expressiveness"])))
-    moo_config.update_config({"ai": update})
+    if "clarity_db" in update:  # belongs to the sound settings, not the engine
+        clarity = max(0.0, min(18.0, float(update.pop("clarity_db"))))
+        moo_config.update_config({"audio": {"clarity_db": clarity}})
+    if update:
+        moo_config.update_config({"ai": update})
     # The storyteller reads the engine when it starts.
     if service_control.is_assistant_running():
         service_control.restart_assistant()

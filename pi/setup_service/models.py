@@ -183,6 +183,7 @@ class AiSettings(BaseModel):
     voice: Optional[str] = None                # local and browser: a Kokoro voice
     expressiveness: float = 0.6                # chatterbox, 0.25 calm to 1.0 dramatic
     browser_quality: str = "auto"              # browser: instant | auto | fast | better
+    clarity_db: float = 12.0                   # treble lift for Moo's speaker, 0 to 18 dB
     cloud_story_model: Optional[str] = None    # cloud: gpt-4o-mini | gpt-4o
     cloud_voice_model: Optional[str] = None    # cloud: tts-1 | gpt-4o-mini-tts
 
@@ -198,6 +199,7 @@ class AiUpdateRequest(BaseModel):
     voice: Optional[str] = None
     expressiveness: Optional[float] = None
     browser_quality: Optional[str] = None
+    clarity_db: Optional[float] = None
     cloud_story_model: Optional[str] = None
     cloud_voice_model: Optional[str] = None
 

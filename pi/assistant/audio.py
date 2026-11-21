@@ -55,16 +55,16 @@ def _clarity_db() -> float:
     try:
         import config
 
-        return float((config.load_config().get("audio") or {}).get("clarity_db", 6.0))
+        return float((config.load_config().get("audio") or {}).get("clarity_db", 12.0))
     except Exception:
-        return 6.0
+        return 12.0
 
 
 def _brighten(samples, rate: int, db: float):
     """Lift the treble of an int16 mono array so speech sounds less muffled
     through Moo's small speaker inside its case. The gain rises from nothing
-    at 1.5 kHz to the full amount at 4 kHz and stays there. The result is
-    scaled down if it would clip."""
+    at 1.5 kHz to the full amount at 4 kHz and stays there, and the lowest
+    notes are turned down a little. The result is scaled down if it would clip."""
     import numpy as np
 
     if db <= 0 or len(samples) < 256:
@@ -72,7 +72,10 @@ def _brighten(samples, rate: int, db: float):
     spec = np.fft.rfft(samples.astype(np.float32))
     freqs = np.fft.rfftfreq(len(samples), 1.0 / rate)
     ramp = np.clip((freqs - 1500.0) / 2500.0, 0.0, 1.0)
-    spec *= 10.0 ** (db * ramp / 20.0)
+    # The case also makes the low notes boom: take a third as much off below
+    # 250 Hz, fading out by 700 Hz.
+    low = np.clip((700.0 - freqs) / 450.0, 0.0, 1.0)
+    spec *= 10.0 ** ((db * ramp - db / 3.0 * low) / 20.0)
     out = np.fft.irfft(spec, n=len(samples))
     peak = float(np.max(np.abs(out))) if len(out) else 0.0
     if peak > 32000:

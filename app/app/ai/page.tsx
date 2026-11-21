@@ -346,6 +346,17 @@ function AiPageInner() {
               <span className="text-xs text-moo-ink/60">Calm ← → dramatic. Chatterbox takes about twice as long as the sentence to speak.</span>
             </label>
           )}
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium">Clarity of Moo&apos;s speaker: {Math.round(settings?.clarity_db ?? 12)}</span>
+            <input
+              type="range" min={0} max={18} step={1}
+              value={Math.round(settings?.clarity_db ?? 12)}
+              onChange={(e) => setSettings((s) => (s ? { ...s, clarity_db: Number(e.target.value) } : s))}
+              onPointerUp={(e) => save({ clarity_db: Number((e.target as HTMLInputElement).value) })}
+              onKeyUp={(e) => save({ clarity_db: Number((e.target as HTMLInputElement).value) })}
+            />
+            <span className="text-xs text-moo-ink/60">Muffled ← → crisp. Move it, then press Hear it on Moo.</span>
+          </label>
           <Button variant="secondary" onClick={runTest} disabled={busy || !settings?.ready}>
             {busy ? "Working…" : "Hear it on Moo"}
           </Button>

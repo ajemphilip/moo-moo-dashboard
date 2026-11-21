@@ -148,6 +148,7 @@ export interface AiSettings {
   voice: string | null;
   expressiveness: number;
   browser_quality: "instant" | "auto" | "fast" | "better";
+  clarity_db: number;
   cloud_story_model: string | null;
   cloud_voice_model: string | null;
 }
