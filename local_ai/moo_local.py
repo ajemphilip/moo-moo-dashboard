@@ -269,7 +269,7 @@ async def speech(request: Request) -> Response:
         voice_id = voice_id if voice_id in {v for v, _ in POCKET_VOICES} else POCKET_VOICES[0][0]
     elif engine == "supertonic":
         voice_id = voice_id if voice_id in {v for v, _ in SUPERTONIC_VOICES} else SUPERTONIC_VOICES[0][0]
-    elif engine != "orpheus" and voice_id not in {v for v, _ in KOKORO_VOICES}:
+    elif engine not in ("orpheus", "qwen3", "kitten") and voice_id not in {v for v, _ in KOKORO_VOICES}:
         voice_id = KOKORO_VOICE
     if engine != "orpheus":
         text = re.sub(r"<(giggle|laugh|chuckle|sigh|gasp|groan|yawn|cough|sniffle)>", "", text).strip()
@@ -278,11 +278,12 @@ async def speech(request: Request) -> Response:
         if engine != "chatterbox":
             _free_chatterbox()
         orpheus_audio = None
-        if engine == "orpheus" and _orpheus_ready():
+        mlx_ok = {"orpheus": _orpheus_ready, "qwen3": _qwen3_ready, "kitten": _kitten_ready}
+        if engine in mlx_ok and mlx_ok[engine]():
             try:
-                orpheus_audio = _orpheus_say(text, voice_id)
+                orpheus_audio = _orpheus_say(text, voice_id, engine)
             except Exception:
-                log.warning("orpheus failed twice, this line in Kokoro", exc_info=True)
+                log.warning("%s failed twice, this line in Kokoro", engine, exc_info=True)
                 text = re.sub(r"<[a-z]+>", "", text).strip()
                 voice_id = KOKORO_VOICE
         if engine == "mac" and voice_id:
@@ -383,7 +384,7 @@ _orpheus = None  # the worker process
 
 
 def _orpheus_worker():
-    """Orpheus runs in its own process (orpheus_worker.py). Inside this
+    """The MLX voices run in their own process (mlx_voice_worker.py). Inside this
     process it shared the GPU with Whisper and the GPU timed out."""
     global _orpheus
     import subprocess
@@ -391,7 +392,7 @@ def _orpheus_worker():
 
     if _orpheus is None or _orpheus.poll() is not None:
         _orpheus = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("orpheus_worker.py"))],
+            [sys.executable, str(Path(__file__).with_name("mlx_voice_worker.py"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
         )
         ready = _orpheus.stdout.readline()
@@ -401,27 +402,51 @@ def _orpheus_worker():
     return _orpheus
 
 
-def _orpheus_say(text: str, voice: str) -> tuple[int, np.ndarray]:
-    """Orpheus, the expressive voice that understands <giggle>, <laugh>,
-    <chuckle>, <sigh>, <gasp>, <groan>, <yawn> written into the text."""
+QWEN3_VOICES = [
+    ("serena", "Serena — gentle"), ("vivian", "Vivian — bright"),
+    ("ryan", "Ryan — lively"), ("aiden", "Aiden — clear"),
+]
+KITTEN_VOICES = [
+    ("Bella", "Bella"), ("Luna", "Luna"), ("Rosie", "Rosie"), ("Kiki", "Kiki"),
+    ("Jasper", "Jasper"), ("Bruno", "Bruno"), ("Hugo", "Hugo"), ("Leo", "Leo"),
+]
+
+
+def _cached(repo: str) -> bool:
+    return (Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo.replace("/", "--"))).exists()
+
+
+def _qwen3_ready() -> bool:
+    return _orpheus_ready() and _cached("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
+
+
+def _kitten_ready() -> bool:
+    return _orpheus_ready() and _cached("mlx-community/kitten-tts-mini-0.8")
+
+
+def _orpheus_say(text: str, voice: str, engine: str = "orpheus") -> tuple[int, np.ndarray]:
+    """A voice from the MLX worker. Orpheus is the expressive one that
+    understands <giggle>, <laugh>, <chuckle>, <sigh>, <gasp>, <groan>, <yawn>
+    written into the text; Qwen3 reads as a storyteller; Kitten is tiny."""
     import tempfile
 
-    if voice not in {v for v, _ in ORPHEUS_VOICES}:
-        voice = "tara"
+    allowed = {"orpheus": ORPHEUS_VOICES, "qwen3": QWEN3_VOICES, "kitten": KITTEN_VOICES}[engine]
+    if voice not in {v for v, _ in allowed}:
+        voice = allowed[0][0]
     with tempfile.TemporaryDirectory() as tmp:
         out = str(Path(tmp) / "say.wav")
         # With Gemma 12B also in memory on a 16 GB Mac the GPU sometimes
         # times out once; the second try nearly always works.
         for attempt in (1, 2):
             worker = _orpheus_worker()
-            worker.stdin.write(json.dumps({"text": text, "voice": voice, "out": out}) + "\n")
+            worker.stdin.write(json.dumps({"engine": engine, "text": text, "voice": voice, "out": out}) + "\n")
             worker.stdin.flush()
             answer = json.loads(worker.stdout.readline() or '{"ok": false, "error": "worker stopped"}')
             if answer.get("ok"):
                 break
-            log.warning("orpheus try %d failed: %s", attempt, answer.get("error"))
+            log.warning("%s try %d failed: %s", engine, attempt, answer.get("error"))
         else:
-            raise RuntimeError(f"Orpheus: {answer.get('error')}")
+            raise RuntimeError(f"{engine}: {answer.get('error')}")
         with wave.open(out, "rb") as wf:
             rate = wf.getframerate()
             pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
@@ -606,9 +631,15 @@ async def options() -> dict:
     if _supertonic_ready():
         engines.append({"id": "supertonic", "label": "Supertonic — natural, quick"})
         voices_by_engine["supertonic"] = [{"id": v, "label": l} for v, l in SUPERTONIC_VOICES]
+    if _kitten_ready():
+        engines.insert(1, {"id": "kitten", "label": "Kitten — tiny and the fastest natural voice"})
+        voices_by_engine["kitten"] = [{"id": v, "label": l} for v, l in KITTEN_VOICES]
     if _kokoro_ready():
         engines.append({"id": "kokoro", "label": "Kokoro — natural, quick"})
         voices_by_engine["kokoro"] = [{"id": v, "label": l} for v, l in KOKORO_VOICES]
+    if _qwen3_ready():
+        engines.append({"id": "qwen3", "label": "Qwen3 — read as a storyteller, slower"})
+        voices_by_engine["qwen3"] = [{"id": v, "label": l} for v, l in QWEN3_VOICES]
     if _orpheus_ready():
         engines.append({"id": "orpheus", "label": "Orpheus — acted, giggles and gasps, slow"})
         voices_by_engine["orpheus"] = [{"id": v, "label": l} for v, l in ORPHEUS_VOICES]
