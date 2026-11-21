@@ -22,6 +22,7 @@ import {
   KITTEN_VOICES,
   LISTEN_CHOICES,
   MEMORY_CHOICES,
+  reloadModels,
   VOICE_CHOICES,
   setDeviceChoice,
   STORY_CHOICES,
@@ -163,11 +164,11 @@ function AiPageInner() {
   const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string; single: string }>) => {
     setDeviceChoice(c);
     setMine(deviceChoice());
+    // Takes effect at once: only the model that changed is loaded again.
     if (thisDevice) {
-      stopThisDevice();
       clearCrash();
       setCrashed(null);
-      startThisDevice(deviceName(), (settings?.browser_quality as Quality) ?? "auto");
+      reloadModels((settings?.browser_quality as Quality) ?? "auto");
     }
   };
 
@@ -390,10 +391,7 @@ function AiPageInner() {
               choices={options.qualities}
               onChange={async (v) => {
                 const s = await save({ browser_quality: v as Quality });
-                if (choice === "this") {
-                  stopThisDevice();
-                  startThisDevice(deviceName(), (s?.browser_quality as Quality) ?? "auto");
-                }
+                if (choice === "this") reloadModels((s?.browser_quality as Quality) ?? "auto");
               }}
             />
           )}

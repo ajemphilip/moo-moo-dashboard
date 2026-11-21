@@ -407,6 +407,7 @@ function wavTo16k(bytes: Uint8Array): Float32Array {
 
 async function runJob(job: Job): Promise<Record<string, unknown>> {
   const p = job.payload as any;
+  await loadingNow.catch(() => {});
   await need(job.kind === "transcribe" ? "speech" : job.kind === "speak" ? "voice" : "story");
   if (job.kind === "chat") {
     const req: any = { messages: p.messages, max_tokens: p.max_tokens ?? 256, temperature: 0.8 };
@@ -586,13 +587,42 @@ export function canRunHere(): string | null {
   return null;
 }
 
+// Model changes wait in line, and a job waits for them, so a job never runs
+// while its model is being swapped.
+let loadingNow: Promise<unknown> = Promise.resolve();
+
+/** Apply the models chosen on this device without reloading the page. A model
+ *  that did not change stays as it is. */
+export async function reloadModels(quality: Quality = lastQuality) {
+  if (!running) return;
+  update({ status: "loading", note: null });
+  const run = loadingNow
+    .catch(() => {})
+    .then(() => loadModels((p) => update({ progress: { ...state.progress, [p.part]: p } }), quality));
+  loadingNow = run;
+  try {
+    const id = await run;
+    update({ model: id as string, status: "ready" });
+  } catch (e: any) {
+    clearCrash();
+    report(`error while changing models: ${String(e?.message ?? e).slice(0, 100)}`);
+    update({ status: "error", note: `Could not load the models: ${e?.message ?? e}` });
+  }
+}
+
 export async function startThisDevice(name: string, quality: Quality = "auto") {
   try {
     localStorage.setItem(THIS_DEVICE_KEY, "1");
   } catch {
     /* not stored */
   }
-  if (running) return;
+  // Already lending (or stopped a moment ago, with its loop still waiting on
+  // the Moo): keep that loop and bring the models in line with the choices.
+  if (running) {
+    stopFlag = false;
+    await reloadModels(quality);
+    return;
+  }
   const problem = canRunHere();
   if (problem) {
     update({ status: "error", note: problem });
