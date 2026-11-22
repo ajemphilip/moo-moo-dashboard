@@ -81,9 +81,11 @@ def post_ai(req: AiUpdateRequest) -> AiSettings:
 
 
 def _health(url: str) -> dict | None:
+    # 8 seconds: Moo Local on a Windows computer took 3.3 to 3.7 s to answer and
+    # was shown as off with the 3 s used before (22 November 2026).
     base = url[: -len("/v1")] if url.endswith("/v1") else url
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=3) as r:
+        with urllib.request.urlopen(f"{base}/health", timeout=8) as r:
             return json.loads(r.read())
     except Exception:
         return None
@@ -109,33 +111,27 @@ def discover() -> AiDiscoverResponse:
         name = re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), f[3])
         host, address, port = f[6], f[7], f[8]
         url = f"http://{address}:{port}/v1"
-        health = _health(url)
-        engines[url] = AiEngine(
-            name=name,
-            host=host,
-            url=url,
-            reachable=health is not None,
-            ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
-        )
+        engines[url] = AiEngine(name=name, host=host, url=url, reachable=False, ready=False)
     # Computers found now are remembered, and every remembered computer stays
     # in the list when it is off, so it can be chosen again once it is back.
-    for e in engines.values():
-        if e.reachable:
-            known_devices.remember(e.name, "computer", url=e.url)
     ai = moo_config.load_config().get("ai") or {}
     remembered = [(ai.get("local_name") or "", (ai.get("local_url") or "").rstrip("/"))]
     remembered += [(n, (k.get("url") or "").rstrip("/")) for n, k in known_devices.known().items() if k.get("kind") == "computer"]
     for name, url in remembered:
         if not url or url in engines:
             continue
-        health = _health(url)
-        engines[url] = AiEngine(
-            name=name or url,
-            host=url.split("//")[-1].split(":")[0],
-            url=url,
-            reachable=health is not None,
-            ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
-        )
+        engines[url] = AiEngine(name=name or url, host=url.split("//")[-1].split(":")[0], url=url, reachable=False, ready=False)
+    # Every computer is asked at the same time, so one slow answer does not hold up the list.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, len(engines))) as pool:
+        answers = dict(zip(engines, pool.map(_health, list(engines))))
+    for url, e in engines.items():
+        h = answers.get(url)
+        e.reachable = h is not None
+        e.ready = bool(h and h.get("story_model_ready") and h.get("voice_ready"))
+        if e.reachable:
+            known_devices.remember(e.name, "computer", url=e.url)
     return AiDiscoverResponse(engines=list(engines.values()))
 
 
