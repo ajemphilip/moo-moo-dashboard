@@ -14,7 +14,7 @@ import { DEFAULTS, LISTEN_MODELS, PHONE_GB, PHONE_NAME, STORY_MODELS, VOICE_MODE
 import { Kitten2Host } from "./src/kitten2";
 import { bye, lend, report, type Job } from "./src/moo";
 import { connectMoo, findMoos } from "./src/ble";
-import { BLUETOOTH, findMoo, moo, type AiSettings, type Computer, type Game, type GameState, type LentDevice, type LetterState, type StoryState } from "./src/pi";
+import { BLUETOOTH, findMoo, moo, type AiSettings, type Computer, type Game, type GameState, type KnownDevice, type LentDevice, type LetterState, type StoryState } from "./src/pi";
 
 const KIND: Record<string, string> = { chat: "writing", moderate: "checking", transcribe: "listening", speak: "speaking" };
 const PHASE: Record<string, string> = {
@@ -420,14 +420,16 @@ export default function App() {
   // Every device that can be the Moo's AI: this phone, other lent phones and
   // computers, and Moo Local machines. The one in use is shown first.
   const [lent, setLent] = useState<LentDevice[]>([]);
+  const [knownDevices, setKnownDevices] = useState<KnownDevice[]>([]);
   const [aiNow, setAiNow] = useState<AiSettings | null>(null);
   const [computers, setComputers] = useState<Computer[]>([]);
   const getDevices = useCallback(
-    () => Promise.all([api!.lent(), api!.aiGet()]).then(([l, a]) => ({ lent: l.devices, ai: a })),
+    () => Promise.all([api!.lent(), api!.aiGet()]).then(([l, a]) => ({ lent: l.devices, known: l.known ?? [], ai: a })),
     [base] // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const setDevices = useCallback((d: { lent: LentDevice[]; ai: AiSettings }) => {
+  const setDevices = useCallback((d: { lent: LentDevice[]; known: KnownDevice[]; ai: AiSettings }) => {
     setLent(d.lent);
+    setKnownDevices(d.known);
     setAiNow(d.ai);
   }, []);
   usePoll(base ? getDevices : null, tab === "phone", setDevices);
@@ -439,7 +441,12 @@ export default function App() {
     return () => clearInterval(id);
   }, [base, tab]);
 
-  type Row = { key: string; title: string; text: string; current: boolean; use?: () => Promise<unknown> };
+  type Row = { key: string; title: string; text: string; current: boolean; off?: boolean; use?: () => Promise<unknown>; forget?: () => Promise<unknown> };
+  const ago = (t?: number | null) => {
+    if (!t) return "";
+    const m = Math.round((Date.now() / 1000 - t) / 60);
+    return m < 2 ? "just now" : m < 90 ? `${m} minutes ago` : m < 36 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`;
+  };
   const rows: Row[] = [];
   if (aiNow) {
     const lentNow = aiNow.mode === "browser";
@@ -463,19 +470,33 @@ export default function App() {
         use: () => api!.useLent(d.name),
       });
     }
+    // Phones and browsers that are off now: the Moo remembers them.
+    const lendingNames = new Set(lent.map((d) => d.name));
+    for (const k of knownDevices.filter((k) => k.kind === "lent" && !lendingNames.has(k.name) && k.name !== PHONE_NAME)) {
+      rows.push({
+        key: `off-${k.name}`,
+        title: k.name,
+        text: `Off${k.last_seen ? `, last seen ${ago(k.last_seen)}` : ""} · ${/app\b/.test(k.name) ? "open the Moo app on it" : "open the Moo website on it and set it up"}`,
+        current: false,
+        off: true,
+        forget: () => api!.forget(k.name),
+      });
+    }
     for (const c of computers) {
       rows.push({
         key: `pc-${c.url}`,
         title: c.name,
-        text: `Moo Local · ${c.ready ? "ready" : c.reachable ? "getting ready" : "not answering"}`,
+        text: `Moo Local · ${c.ready ? "ready" : c.reachable ? "on, getting ready" : "off · start Moo Local on it"}`,
         current: aiNow.mode === "local" && aiNow.local_url === c.url,
+        off: !c.reachable,
         use: c.reachable ? () => api!.useComputer(c) : undefined,
+        forget: knownDevices.some((k) => k.name === c.name) ? () => api!.forget(c.name) : undefined,
       });
     }
     if (aiNow.has_openai_key || aiNow.mode === "cloud") {
       rows.push({ key: "cloud", title: "Cloud, OpenAI", text: "Needs internet; each story costs a little", current: aiNow.mode === "cloud", use: () => api!.useCloud() });
     }
-    rows.sort((a, b) => Number(b.current) - Number(a.current));
+    rows.sort((a, b) => Number(b.current) - Number(a.current) || Number(!!a.off) - Number(!!b.off));
   }
   // Adding a device: it joins the list by itself once it works for the Moo.
   const [adding, setAdding] = useState(false);
@@ -493,8 +514,8 @@ export default function App() {
     },
     {
       title: "A computer with Moo Local, for the best quality",
-      text: "On a Mac, paste this line into Terminal once. While Moo Local runs, the computer shows in this list.",
-      share: `curl -fsSL http://${host}:8000/local-ai/install.sh | bash`,
+      text: "Open this page on a Windows, Mac or Linux computer and download Moo Local. Once it runs, the computer shows in this list.",
+      share: `http://${host}:8000/ai/setup/`,
     },
   ];
   const addCard = (
@@ -527,6 +548,11 @@ export default function App() {
             <Text style={[styles.choiceText, r.current && styles.choiceTextOn]}>{r.title}{r.current ? " · in use now" : ""}</Text>
             <Text style={[styles.small, r.current && { color: "#fff", opacity: 0.9 }]}>{r.text}</Text>
           </Pressable>
+          {!r.current && r.forget && (
+            <Pressable onPress={() => act(async () => { await r.forget!(); setDevices(await getDevices()); })} style={{ alignSelf: "flex-end", padding: 4 }}>
+              <Text style={[styles.small, { textDecorationLine: "underline" }]}>Forget {r.title}</Text>
+            </Pressable>
+          )}
         </View>
       ))}
       <Button title={adding ? "Close" : "Add a device"} kind="plain" onPress={() => setAdding((a) => !a)} />

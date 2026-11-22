@@ -86,6 +86,13 @@ export interface LentDevice {
   jobs_done: number;
   current?: boolean;
 }
+/** A device that has worked for this Moo, remembered by the Moo. */
+export interface KnownDevice {
+  name: string;
+  kind: "lent" | "computer";
+  url?: string | null;
+  last_seen?: number | null; // seconds since 1970
+}
 export interface Computer {
   name: string;
   url: string;
@@ -108,7 +115,8 @@ export const moo = (base: string) => ({
   computers: () => call<{ engines: Computer[] }>(base, "/ai/discover"),
   useComputer: (c: Computer) => call<AiSettings>(base, "/ai", { mode: "local", local_url: c.url, local_name: c.name }),
   useCloud: () => call<AiSettings>(base, "/ai", { mode: "cloud" }),
-  lent: () => call<{ devices: LentDevice[]; current?: string | null }>(base, "/engine/status"),
+  lent: () => call<{ devices: LentDevice[]; current?: string | null; known?: KnownDevice[] }>(base, "/engine/status"),
+  forget: (name: string) => call<unknown>(base, "/engine/forget", { name }),
   useLent: (name: string) =>
     call<unknown>(base, "/engine/use", { name }).then(() => call<unknown>(base, "/ai", { mode: "browser" })),
   testVoice: () => call<{ line: string; story_seconds: number; voice_seconds: number }>(base, "/ai/test", {}),
