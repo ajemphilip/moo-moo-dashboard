@@ -284,8 +284,24 @@ def _run_continue() -> None:
         _set(phase="error", error=str(exc))
 
 
+# One start at a time. The phone app once sent two starts in the same
+# second, both got past the check of "active" while the first was still being
+# set up, and two sessions ran at once: the intro played twice and one
+# session's microphone recorded the other's voice (21 November 2026).
+_story_start_lock = threading.Lock()
+
+
 @router.post("/start", response_model=StoryState)
 def story_start() -> StoryState:
+    if not _story_start_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Moo is already starting one")
+    try:
+        return _story_start_unguarded()
+    finally:
+        _story_start_lock.release()
+
+
+def _story_start_unguarded() -> StoryState:
     global _was_running, _client, _audio, _age_range, _worker
     global _steer_question, _steer_answer
     with _lock:

@@ -8,6 +8,7 @@ audio.speech endpoint and plays via sounddevice.
 from __future__ import annotations
 
 import io
+import re
 import logging
 import tempfile
 import threading
@@ -355,13 +356,16 @@ class AudioIO:
                     )
                     elapsed += block_s
 
-                    # 0.2-0.6 s window establishes the noise floor.
-                    if elapsed <= 0.6:
-                        if elapsed >= 0.2:
+                    # 0.3-0.8 s window establishes the noise floor. The quietest
+                    # block counts, not the mean: the chime still rings in the
+                    # case at first, and once set the floor ten times too high
+                    # (ambient 0.34, threshold 0.75; 21 November 2026).
+                    if elapsed <= 0.8:
+                        if elapsed >= 0.3:
                             ambient_samples.append(rms)
                         continue
                     if ambient_samples and not speech_started and trailing_silence == 0.0:
-                        ambient = sum(ambient_samples) / len(ambient_samples)
+                        ambient = min(ambient_samples)
                         threshold = ambient * 2.2 + 0.0015
                         logger.info(
                             "record: ambient=%.4f threshold=%.4f", ambient, threshold
@@ -376,7 +380,10 @@ class AudioIO:
 
                     if not speech_started and elapsed >= start_timeout:
                         logger.info("record: no speech in %.1fs", start_timeout)
-                        break
+                        # Nothing to hear. Sent on, the noise came back from
+                        # Whisper as words ("(beeping) ... (buzzing)").
+                        self.play_cue("done")
+                        return b""
                     if speech_started and trailing_silence >= silence_seconds:
                         logger.info(
                             "record: speech ended (%.1fs trailing silence, %.1fs total)",
@@ -398,6 +405,8 @@ class AudioIO:
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Send recorded audio to Whisper API; return transcript text."""
+        if not wav_bytes:
+            return ""  # no speech was heard, so there is nothing to write out
         if self.dry_run:
             logger.info("[dry-run] would transcribe via Whisper")
             return "puppy"
@@ -420,6 +429,7 @@ class AudioIO:
 
     def speak(self, text: str) -> None:
         """Generate TTS via OpenAI and play through the configured output device."""
+        text = _plain_case(text)
         if not text:
             return
         if self.dry_run:
@@ -491,6 +501,21 @@ def _read_wav(wav_bytes: bytes):
     else:
         raise ValueError(f"wav format {tag} with {bits} bits is not supported")
     return rate, channels, audio
+
+
+_SHOUTED = re.compile(r"\b[A-Z][A-Z']+\b")
+
+
+def _plain_case(text: str) -> str:
+    """Words in capitals as ordinary words before they are spoken.
+
+    Moo's instructions to the story model use capitals for weight (SAY OUT
+    LOUD, YES, MORE). A small model copies them into what it writes, and some
+    voices then spell them out or stress them oddly (21 November 2026). A
+    single letter such as the C of the letter game, and "I", stay as they are.
+    """
+    keep = {"I'M": "I'm", "OK": "okay", "I'LL": "I'll", "I'VE": "I've", "I'D": "I'd"}
+    return _SHOUTED.sub(lambda m: keep.get(m.group(0), m.group(0).lower()), text or "")
 
 
 def _to_wav_bytes(pcm: bytes, sample_rate: int) -> bytes:

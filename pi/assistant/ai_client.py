@@ -15,8 +15,11 @@ so both are reached with the same OpenAI client. Only the address changes:
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 LOCAL_KEY = "moo-local"  # Moo Local needs no key; the client library wants one
 
@@ -184,7 +187,11 @@ class BrowserClient:
             {"messages": messages or [], "max_tokens": max_tokens, "response_format": response_format},
             self.timeout,
         )
-        msg = SimpleNamespace(content=res.get("content", ""))
+        content = res.get("content", "")
+        # What the lent device wrote, so its answers can be compared with a
+        # computer's when the story goes wrong on a phone.
+        logger.info("lent chat reply: %r", content[:240])
+        msg = SimpleNamespace(content=content)
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
 
     def _transcribe(self, model=None, file=None, **_kw):

@@ -108,8 +108,24 @@ def _run(ctx: word_games.Session, game: str) -> None:
         _set(phase="error", error=str(exc))
 
 
+# One start at a time. The phone app once sent two starts in the same
+# second, both got past the check of "active" while the first was still being
+# set up, and two sessions ran at once: the intro played twice and one
+# session's microphone recorded the other's voice (21 November 2026).
+_games_start_lock = threading.Lock()
+
+
 @router.post("/start", response_model=GameState)
 def games_start(req: GameStartRequest) -> GameState:
+    if not _games_start_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Moo is already starting one")
+    try:
+        return _games_start_unguarded(req)
+    finally:
+        _games_start_lock.release()
+
+
+def _games_start_unguarded(req: GameStartRequest) -> GameState:
     global _worker, _was_running
     with _lock:
         if _state["active"]:
