@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/Button";
+import { GetTheApp } from "@/components/GetTheApp";
 import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
 import { api, PiApiError, type BrailleTestResult } from "@/lib/api";
@@ -159,6 +160,7 @@ export default function DashboardPage() {
           <Button variant="secondary" onClick={() => setConfirmReset(true)}>Factory reset</Button>
         )}
       </div>
+      <GetTheApp />
     </StepLayout>
   );
 }

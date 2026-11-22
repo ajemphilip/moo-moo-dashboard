@@ -91,10 +91,17 @@ function AiPageInner() {
   const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno", kitten2Voice: "Eleanor", single: "" });
 
   const here = typeof window !== "undefined" ? canRunHere() : null;
-  const secureUrl =
-    typeof window !== "undefined"
-      ? `https://${window.location.hostname}:8443/ai/?thisdevice=1${setup ? "&setup=1" : ""}`
-      : "";
+  // This device runs on the Moo's own secure address. On the Moo's website that is this host; on GitHub
+  // Pages it is the Moo's address on the wifi, which the Moo gives over Bluetooth, else moo.local. The
+  // page's own host was used here before, which sent GitHub Pages to github.io:8443 (22 November 2026).
+  const githubPages = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
+  const [mooHost, setMooHost] = useState<string>(
+    typeof window !== "undefined" && !githubPages ? window.location.hostname : "moo.local",
+  );
+  useEffect(() => {
+    if (githubPages) api.status().then((st) => st.address && setMooHost(st.address)).catch(() => {});
+  }, [githubPages]);
+  const secureUrl = `https://${mooHost}:8443/ai/?thisdevice=1${setup ? "&setup=1" : ""}`;
 
   const refreshOptions = () => api.aiOptions().then(setOptions).catch(() => setOptions(null));
 
@@ -309,7 +316,10 @@ function AiPageInner() {
       >
         {here && choice !== "this" && (
           <p className="text-xs text-moo-ink/60">
-            Opens the Moo&apos;s secure address first. Your browser warns once — choose Advanced, then continue.
+            {githubPages
+              ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>. This device has to be on the same wifi as the Moo. </>
+              : <>Opens the Moo&apos;s secure address first. </>}
+            Your browser warns once — choose Advanced, then continue.
           </p>
         )}
         {crashed && (

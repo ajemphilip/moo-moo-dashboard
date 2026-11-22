@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/Button";
+import { GetTheApp } from "@/components/GetTheApp";
 import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
 import { discoverPi } from "@/lib/pi";
@@ -62,6 +63,7 @@ export default function Welcome() {
           </>
         )}
       </div>
+      <GetTheApp />
     </StepLayout>
   );
 }
