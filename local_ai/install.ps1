@@ -49,11 +49,27 @@ function Ollama-Up {
     try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:11434/api/tags" | Out-Null; return $true } catch { return $false }
 }
 function Find-Ollama {
+    # A program installed a moment ago is not on this window's PATH yet: read it again.
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
     $c = Get-Command ollama.exe -ErrorAction SilentlyContinue
     if ($c) { return $c.Source }
-    $p = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
-    if (Test-Path $p) { return $p }
+    foreach ($dir in @((Join-Path $env:LOCALAPPDATA "Programs\Ollama"), (Join-Path $env:ProgramFiles "Ollama"), (Join-Path $env:LOCALAPPDATA "Ollama"))) {
+        $p = Join-Path $dir "ollama.exe"
+        if (Test-Path $p) { return $p }
+        if (Test-Path $dir) {
+            $found = Get-ChildItem -Path $dir -Filter ollama.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { return $found.FullName }
+        }
+    }
     return $null
+}
+function Wait-Ollama($seconds) {
+    # Ollama's own app starts the service after its first window; give it time.
+    for ($i = 0; $i -lt $seconds; $i++) {
+        if (Ollama-Up) { return $true }
+        Start-Sleep 1
+    }
+    return (Ollama-Up)
 }
 
 # --- Moo Local's files, from the Moo -----------------------------------------
@@ -80,28 +96,37 @@ if (-not $haveUv) {
 $env:UV_PYTHON_PREFERENCE = "only-managed"
 
 # --- Ollama -----------------------------------------------------------------------
+# What matters is that Ollama answers on this computer. Where its program
+# lives, and whether it was just installed, varies between versions.
 Say "Ollama, for the stories"
 $Ollama = Find-Ollama
-if (-not $Ollama) {
+if (-not $Ollama -and -not (Ollama-Up)) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         & $winget.Source install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements
     }
     $Ollama = Find-Ollama
-    if (-not $Ollama) {
+    if (-not $Ollama -and -not (Wait-Ollama 5)) {
         Write-Host "Using Ollama's own installer."
         $setup = Join-Path $env:TEMP "OllamaSetup.exe"
-        try { Download "https://ollama.com/download/OllamaSetup.exe" $setup } catch { Fail "Ollama could not be downloaded." }
-        Start-Process -Wait $setup -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"
-        $Ollama = Find-Ollama
+        try { Download "https://ollama.com/download/OllamaSetup.exe" $setup } catch { Fail "Ollama could not be downloaded. Check the internet connection." }
+        # Wait for the installer only, not for the Ollama app it opens at the end.
+        $proc = Start-Process $setup -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES" -PassThru
+        $proc.WaitForExit()
+        for ($i = 0; $i -lt 30 -and -not $Ollama; $i++) { Start-Sleep 1; $Ollama = Find-Ollama }
     }
-    if (-not $Ollama) { Fail "Ollama could not be installed." }
 }
-if (-not (Ollama-Up)) {
+if (-not (Ollama-Up) -and $Ollama) {
     Start-Process -WindowStyle Hidden $Ollama -ArgumentList "serve"
-    for ($i = 0; $i -lt 30 -and -not (Ollama-Up); $i++) { Start-Sleep 1 }
 }
-if (-not (Ollama-Up)) { Fail "Ollama did not start." }
+if (-not (Wait-Ollama 60)) {
+    Write-Host ""
+    Write-Host "Ollama is installed but has not started yet." -ForegroundColor Yellow
+    Write-Host "If an Ollama window is open, finish its steps. Otherwise open Ollama from the Start menu once."
+    Write-Host "Then open Install Moo Local.cmd again: it carries on from here."
+    Fail "Ollama is not running yet."
+}
+Write-Host "Ollama is running."
 
 # --- Python libraries ---------------------------------------------------------------
 Say "Python libraries (several minutes the first time)"

@@ -1413,6 +1413,8 @@ def _start_ollama() -> None:
         "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama",
         "/Applications/Ollama.app/Contents/Resources/ollama",
         str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / exe) if WINDOWS else "",
+        str(Path(os.environ.get("ProgramFiles", "")) / "Ollama" / exe) if WINDOWS else "",
+        str(Path.home() / "Applications" / "Ollama.app" / "Contents" / "Resources" / "ollama"),
     ]
     binary = next((c for c in candidates if c and Path(c).is_file()), None)
     if not binary:

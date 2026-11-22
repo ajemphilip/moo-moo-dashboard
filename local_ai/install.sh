@@ -88,10 +88,13 @@ TORCH=()
 # --- Ollama ---------------------------------------------------------------------
 say "Ollama, for the stories"
 OLLAMA="$(command -v ollama || true)"
-for c in /opt/homebrew/bin/ollama /usr/local/bin/ollama /Applications/Ollama.app/Contents/Resources/ollama "$ROOT/ollama/ollama"; do
+for c in /opt/homebrew/bin/ollama /usr/local/bin/ollama /usr/bin/ollama /Applications/Ollama.app/Contents/Resources/ollama \
+         "$HOME/Applications/Ollama.app/Contents/Resources/ollama" "$ROOT/ollama/ollama"; do
   [ -z "$OLLAMA" ] && [ -x "$c" ] && OLLAMA="$c"
 done
-if [ -z "$OLLAMA" ]; then
+ollama_up() { curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+# What matters is that Ollama answers; an Ollama that runs already is used as it is.
+if [ -z "$OLLAMA" ] && ! ollama_up; then
   if [ "$OS" = "Darwin" ]; then
     mkdir -p "$ROOT/ollama"
     curl -fL --progress-bar https://ollama.com/download/ollama-darwin.tgz -o "$ROOT/ollama/ollama.tgz" \
@@ -104,11 +107,16 @@ if [ -z "$OLLAMA" ]; then
     OLLAMA="$(command -v ollama || echo /usr/local/bin/ollama)"
   fi
 fi
-if ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+if ! ollama_up && [ -n "$OLLAMA" ]; then
   (nohup "$OLLAMA" serve >"$ROOT/ollama.log" 2>&1 &)
-  for _ in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1; done
 fi
-curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || fail "Ollama did not start. See $ROOT/ollama.log"
+for _ in $(seq 1 60); do ollama_up && break; sleep 1; done
+if ! ollama_up; then
+  echo "Ollama is installed but has not started yet. If an Ollama window is open, finish its steps;"
+  echo "otherwise open Ollama once. Then open this installer again: it carries on from here."
+  fail "Ollama is not running yet. See $ROOT/ollama.log"
+fi
+echo "Ollama is running."
 
 # --- Python libraries -------------------------------------------------------------
 say "Python libraries (several minutes the first time)"
