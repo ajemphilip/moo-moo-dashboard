@@ -86,6 +86,9 @@ function AiPageInner() {
   const [lent, setLent] = useState<{ name: string; jobs_done: number; current?: boolean }[]>([]);
   // Every device that has worked for this Moo, on now or not (the Moo remembers them).
   const [known, setKnown] = useState<KnownDevice[]>([]);
+  const [settingUp, setSettingUp] = useState(false);
+  // Moo Local is offered on computers only: phones and tablets do the work in the browser or the Moo app.
+  const onComputer = typeof navigator !== "undefined" && !/iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<AiTest | null>(null);
@@ -390,16 +393,33 @@ function AiPageInner() {
         ))}
         {engines === null && <Spinner label="Looking for computers…" />}
         <div className="flex flex-col gap-2 mt-1">
-          <Button onClick={chooseThisDevice} disabled={busy || thisDevice}>
+          <Button onClick={() => setSettingUp((v) => !v)} disabled={busy || thisDevice}>
             {thisDevice ? "This device is set up" : "Set up this device"}
           </Button>
-          {here && !thisDevice && (
-            <p className="text-xs text-moo-ink/60">
-              {githubPages
-                ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>. This device has to be on the same wifi as the Moo. </>
-                : <>Opens the Moo&apos;s secure address first. </>}
-              Your browser warns once — choose Advanced, then continue.
-            </p>
+          {/* One button: it asks how this device should do the work. */}
+          {settingUp && !thisDevice && (
+            <div className="flex flex-col gap-2 rounded-moo border border-moo-ink/10 p-3">
+              <button type="button" onClick={() => { setSettingUp(false); chooseThisDevice(); }} className="rounded-moo border border-moo-ink/20 bg-white px-3 py-2 text-left">
+                <div className="font-medium">In this browser</div>
+                <div className="text-xs text-moo-ink/70">Nothing to install. Keep this page open while your child plays.</div>
+                {here && (
+                  <div className="text-xs text-moo-ink/60 mt-1">
+                    {githubPages
+                      ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>; this device has to be on the Moo&apos;s wifi. </>
+                      : <>Opens the Moo&apos;s secure address first. </>}
+                    Your browser warns once: choose Advanced (Show Details in Safari), then continue.
+                  </div>
+                )}
+              </button>
+              {onComputer ? (
+                <button type="button" onClick={() => router.push("/ai/setup")} className="rounded-moo border border-moo-ink/20 bg-white px-3 py-2 text-left">
+                  <div className="font-medium">With Moo Local</div>
+                  <div className="text-xs text-moo-ink/70">The best stories and voices. Install it once on this computer; it then works without this page.</div>
+                </button>
+              ) : (
+                <p className="text-xs text-moo-ink/70">On a phone the Moo app can do more than the browser: larger models and the Kokoro voice.</p>
+              )}
+            </div>
           )}
           {crashed && (
             <p className="text-sm text-red-600">
@@ -416,10 +436,6 @@ function AiPageInner() {
                   : `Ready · ${engine.model} · ${engine.jobsDone} jobs${engine.lastSeconds ? `, last ${engine.lastSeconds}s` : ""}`}
             </p>
           )}
-          <Button variant="secondary" onClick={() => router.push("/ai/setup")}>
-            Set up a local machine
-          </Button>
-          <p className="text-xs text-moo-ink/60">A phone is set up by opening the Moo app on it, on the same wifi as the Moo.</p>
         </div>
       </div>
 
