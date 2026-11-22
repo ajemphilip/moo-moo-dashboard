@@ -32,6 +32,7 @@ from fastapi import APIRouter, HTTPException
 import config as moo_config
 
 from ..models import EngineHello, EngineResult, EngineSubmit
+from ..services import known_devices
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/engine")
@@ -125,6 +126,7 @@ def hello(req: EngineHello) -> dict:
         _cond.notify_all()
     if not _current_name():
         _set_current(req.name)  # the first device lent becomes the current one
+    known_devices.remember(req.name, "lent", device=req.device, force=True)
     logger.info("device lent to Moo: %s (%s)", req.name, req.device)
     return {"engine_id": engine_id}
 
@@ -158,6 +160,9 @@ def next_job(engine_id: str) -> dict:
         eng = _engines.get(engine_id)
         if eng is None:
             raise HTTPException(status_code=404, detail="Unknown device, say hello again")
+        name = eng["name"]
+    known_devices.remember(name, "lent")  # at most every five minutes
+    with _cond:
         while True:
             eng["last_seen"] = time.monotonic()
             if _engines.get(engine_id) is not eng:
@@ -208,7 +213,24 @@ def status() -> dict:
             ],
             "current": current,  # the device chosen, lending or not
             "queued": len(_queue),
+            # Every phone, browser and computer that has worked for this Moo, on now or not.
+            "known": [
+                {"name": n, "kind": k.get("kind", "lent"), "url": k.get("url"),
+                 "last_seen": k.get("last_seen"),
+                 "on_now": any(e["name"] == n for e in alive) if k.get("kind", "lent") == "lent" else None,
+                 "current": n == working if k.get("kind", "lent") == "lent" else False}
+                for n, k in sorted(known_devices.known().items(), key=lambda kv: -(kv[1].get("last_seen") or 0))
+            ],
         }
+
+
+@router.post("/forget")
+def forget(body: dict) -> dict:
+    """Take a remembered device off the list."""
+    name = str(body.get("name") or "").strip()
+    if not known_devices.forget(name):
+        raise HTTPException(status_code=404, detail="No such device")
+    return {"ok": True}
 
 
 @router.post("/submit")

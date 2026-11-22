@@ -62,6 +62,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** A device that has worked for this Moo, remembered by the Moo. */
+export interface KnownDevice {
+  name: string;
+  kind: "lent" | "computer";
+  url?: string | null;
+  last_seen?: number | null; // seconds since 1970
+  on_now?: boolean | null;
+  current?: boolean;
+}
+
 export interface Status {
   configured: boolean;
   wifi_connected: boolean;
@@ -327,7 +337,11 @@ export const api = {
       devices: { name: string; jobs_done: number; seconds_since_seen: number; current?: boolean }[];
       current?: string | null;
       queued: number;
+      known?: KnownDevice[];
     }>("/engine/status"),
+  // Take a remembered device off the list.
+  engineForget: (name: string) =>
+    request<{ ok: boolean }>("/engine/forget", { method: "POST", body: JSON.stringify({ name }) }),
   // Make a lent phone or computer the current one: it gets the jobs from now on.
   engineUse: (name: string) =>
     request<{ current: string }>("/engine/use", { method: "POST", body: JSON.stringify({ name }) }),

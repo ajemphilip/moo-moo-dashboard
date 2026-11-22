@@ -11,6 +11,7 @@ POST /ai/test      — a quick story line and voice through the chosen engine
 from __future__ import annotations
 
 import json
+import re
 import logging
 import subprocess
 import time
@@ -21,7 +22,7 @@ from fastapi import APIRouter, HTTPException
 import config as moo_config
 
 from ..models import AiDiscoverResponse, AiEngine, AiSettings, AiTestResponse, AiUpdateRequest
-from ..services import service_control
+from ..services import service_control, known_devices
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai")
@@ -71,6 +72,8 @@ def post_ai(req: AiUpdateRequest) -> AiSettings:
         moo_config.update_config({"audio": {"clarity_db": clarity}})
     if update:
         moo_config.update_config({"ai": update})
+    if update.get("mode") == "local" and update.get("local_url"):
+        known_devices.remember(update.get("local_name") or update["local_url"], "computer", url=update["local_url"], force=True)
     # The storyteller reads the engine when it starts.
     if service_control.is_assistant_running():
         service_control.restart_assistant()
@@ -102,7 +105,8 @@ def discover() -> AiDiscoverResponse:
         f = line.split(";")
         if len(f) < 9 or f[0] != "=" or f[2] != "IPv4":
             continue
-        name = f[3].replace("\\032", " ")
+        # avahi writes characters as \DDD (decimal): a space is \032, "(" is \040.
+        name = re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), f[3])
         host, address, port = f[6], f[7], f[8]
         url = f"http://{address}:{port}/v1"
         health = _health(url)
@@ -113,16 +117,22 @@ def discover() -> AiDiscoverResponse:
             reachable=health is not None,
             ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
         )
-    # A computer added by its address stays in the list even when it does
-    # not announce itself on the network.
+    # Computers found now are remembered, and every remembered computer stays
+    # in the list when it is off, so it can be chosen again once it is back.
+    for e in engines.values():
+        if e.reachable:
+            known_devices.remember(e.name, "computer", url=e.url)
     ai = moo_config.load_config().get("ai") or {}
-    saved = (ai.get("local_url") or "").rstrip("/")
-    if saved and saved not in engines:
-        health = _health(saved)
-        engines[saved] = AiEngine(
-            name=ai.get("local_name") or saved,
-            host=saved.split("//")[-1].split(":")[0],
-            url=saved,
+    remembered = [(ai.get("local_name") or "", (ai.get("local_url") or "").rstrip("/"))]
+    remembered += [(n, (k.get("url") or "").rstrip("/")) for n, k in known_devices.known().items() if k.get("kind") == "computer"]
+    for name, url in remembered:
+        if not url or url in engines:
+            continue
+        health = _health(url)
+        engines[url] = AiEngine(
+            name=name or url,
+            host=url.split("//")[-1].split(":")[0],
+            url=url,
             reachable=health is not None,
             ready=bool(health and health.get("story_model_ready") and health.get("voice_ready")),
         )

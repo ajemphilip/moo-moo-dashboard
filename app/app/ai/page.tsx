@@ -13,6 +13,7 @@ import {
   type AiOptions,
   type AiSettings,
   type AiTest,
+  type KnownDevice,
 } from "@/lib/api";
 import {
   canRunHere,
@@ -83,6 +84,8 @@ function AiPageInner() {
   const [options, setOptions] = useState<AiOptions | null>(null);
   const [engines, setEngines] = useState<AiEngine[] | null>(null);
   const [lent, setLent] = useState<{ name: string; jobs_done: number; current?: boolean }[]>([]);
+  // Every device that has worked for this Moo, on now or not (the Moo remembers them).
+  const [known, setKnown] = useState<KnownDevice[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<AiTest | null>(null);
@@ -110,7 +113,11 @@ function AiPageInner() {
     api.aiGet().then(setSettings).catch((e) => setError(errMsg(e)));
     api.aiDiscover().then((r) => setEngines(r.engines)).catch(() => setEngines([]));
     refreshOptions();
-    const tick = () => api.engineStatus().then((s) => setLent(s.devices)).catch(() => {});
+    const tick = () =>
+      api.engineStatus().then((s) => {
+        setLent(s.devices);
+        setKnown(s.known ?? []);
+      }).catch(() => {});
     tick();
     const id = setInterval(tick, 3000);
     return () => clearInterval(id);
@@ -205,6 +212,48 @@ function AiPageInner() {
   const kitten2Voice = kitten2Voices.includes(mine.kitten2Voice) ? mine.kitten2Voice : kitten2Voices[0];
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
+  // The rows of the device list. Computers come from the search on the network and the Moo's memory;
+  // phones and browsers from the devices lending now and the Moo's memory.
+  type Row = { key: string; name: string; text: string; current: boolean; on: boolean; remembered: boolean; use?: () => void };
+  const ago = (t?: number | null) => {
+    if (!t) return "";
+    const m = Math.round((Date.now() / 1000 - t) / 60);
+    return m < 2 ? "just now" : m < 90 ? `${m} minutes ago` : m < 36 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`;
+  };
+  const knownNames = new Set(known.map((k) => k.name));
+  const devices: Row[] = [];
+  for (const e of engines ?? []) {
+    devices.push({
+      key: `pc-${e.url}`,
+      name: e.name,
+      on: e.reachable,
+      current: settings?.mode === "local" && settings?.local_url === e.url,
+      remembered: knownNames.has(e.name),
+      text: `Moo Local · ${e.ready ? "ready" : e.reachable ? "on, getting ready" : `off${ago(known.find((k) => k.name === e.name)?.last_seen) ? `, last seen ${ago(known.find((k) => k.name === e.name)?.last_seen)}` : ""} · start Moo Local on it`}`,
+      use: e.reachable ? () => chooseComputer(e) : undefined,
+    });
+  }
+  const lentNames = new Set(lent.map((d) => d.name));
+  const lentRows = [
+    ...lent.map((d) => ({ name: d.name, on: true, current: !!d.current, jobs: d.jobs_done, last: null as number | null })),
+    ...known.filter((k) => k.kind === "lent" && !lentNames.has(k.name)).map((k) => ({ name: k.name, on: false, current: false, jobs: 0, last: k.last_seen ?? null })),
+  ];
+  for (const d of lentRows) {
+    const mine = d.name === deviceName();
+    const app = /app\b/.test(d.name);
+    devices.push({
+      key: `lent-${d.name}`,
+      name: mine ? `${d.name} (this device)` : d.name,
+      on: d.on || (mine && thisDevice),
+      current: settings?.mode === "browser" && (mine ? thisDevice : !thisDevice && d.current),
+      remembered: knownNames.has(d.name),
+      text: d.on
+        ? `${app ? "The Moo app" : "A browser"} · ${d.jobs} jobs done`
+        : `${app ? "The Moo app" : "A browser"} · off${d.last ? `, last seen ${ago(d.last)}` : ""} · ${app ? "open the Moo app on it" : "open the Moo website on it and set it up"}`,
+      use: mine ? chooseThisDevice : d.on ? () => chooseOther(d.name) : undefined,
+    });
+  }
+  devices.sort((a, b) => Number(b.current) - Number(a.current) || Number(b.on) - Number(a.on));
   const choice: Choice | null =
     mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : lent.length ? "computer" : null) : null;
 
@@ -305,96 +354,74 @@ function AiPageInner() {
         {loadState && <p className="text-xs text-moo-ink/60">{loadState}</p>}
       </div>
 
-      <h2 className="font-semibold mt-2">Where the AI runs</h2>
-
-      <Option
-        active={choice === "this"}
-        title="This device"
-        text="The phone or computer you are holding does the work in this browser, on its own chip. Free and private. Keep the Moo website open on it while your child plays."
-        onClick={chooseThisDevice}
-        disabled={busy}
-      >
-        {here && choice !== "this" && (
-          <p className="text-xs text-moo-ink/60">
-            {githubPages
-              ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>. This device has to be on the same wifi as the Moo. </>
-              : <>Opens the Moo&apos;s secure address first. </>}
-            Your browser warns once — choose Advanced, then continue.
-          </p>
-        )}
-        {crashed && (
-          <p className="text-sm text-red-600">
-            Last time this browser closed while loading {crashed}. That usually means the device ran out of memory.
-            Choose smaller models under Settings for this device, then tap This device again.
-          </p>
-        )}
-        {choice === "this" && engine && (
-          <p className="text-sm">
-            {engine.status === "loading"
-              ? `Loading… ${Object.values(engine.progress).map((p) => p.text).join(" · ")}`
-              : engine.status === "error"
-                ? engine.note
-                : `Ready · ${engine.model} · ${engine.jobsDone} jobs${engine.lastSeconds ? `, last ${engine.lastSeconds}s` : ""}`}
-          </p>
-        )}
-      </Option>
-
-      <Option
-        active={choice === "computer"}
-        title="Local machines"
-        text="A machine at home does the work. Tap one to use it. It has to be on."
-      >
-        {engines === null && <Spinner label="Looking for computers…" />}
-        {engines?.length === 0 && lent.length === 0 && (
-          <p className="text-sm text-amber-700">No machine found yet.</p>
-        )}
-        {engines?.map((e) => (
-          <button
-            key={e.url}
-            type="button"
-            disabled={busy || !e.reachable}
-            onClick={() => chooseComputer(e)}
-            className={`rounded-moo border px-3 py-2 text-left disabled:opacity-50 ${
-              mode === "local" && settings?.local_url === e.url
-                ? "bg-moo-accent text-white border-moo-accent"
-                : "bg-white border-moo-ink/20"
-            }`}
-          >
-            <div className="font-medium">{e.name}</div>
-            <div className="text-xs opacity-70">
-              Moo Local · {e.ready ? "ready" : e.reachable ? "getting ready" : "not answering"}
-              {mode === "local" && settings?.local_url === e.url ? " · in use" : ""}
-            </div>
-          </button>
-        ))}
-        {/* Phones and computers that are lending: the current one first and
-            marked, the others one tap away. This browser itself is "This device". */}
-        {lent
-          .filter((d) => !(thisDevice && d.name === deviceName()))
-          .map((d) => {
-            const current = mode === "browser" && !thisDevice && !!d.current;
-            return (
+      {/* One list of every device that can do the Moo's AI: the one in use first, the others one tap
+          away, and the ones that are off greyed out with when they were last seen. A device is added by
+          setting it up: this one with the button below, a phone with the Moo app, a computer with Moo Local. */}
+      <div className="moo-card flex flex-col gap-2">
+        <h2 className="font-semibold">Devices</h2>
+        <p className="text-sm text-moo-ink/70">
+          The phones, browsers and computers that do Moo&apos;s AI. The one in use is first; tap another to use it.
+        </p>
+        {devices.length === 0 && <p className="text-sm text-amber-700">No device yet. Set this one up below.</p>}
+        {devices.map((d) => (
+          <div key={d.key} className="flex items-stretch gap-2">
+            <button
+              type="button"
+              disabled={busy || d.current || !d.use}
+              onClick={() => d.use?.()}
+              className={`flex-1 rounded-moo border px-3 py-2 text-left disabled:opacity-100 ${
+                d.current ? "bg-moo-accent text-white border-moo-accent" : d.on ? "bg-white border-moo-ink/20" : "bg-white border-moo-ink/10 opacity-60"
+              }`}
+            >
+              <div className="font-medium">{d.name}{d.current ? " · in use now" : ""}</div>
+              <div className="text-xs opacity-80">{d.text}</div>
+            </button>
+            {!d.current && d.remembered && (
               <button
-                key={`lent-${d.name}`}
                 type="button"
-                disabled={busy || current}
-                onClick={() => chooseOther(d.name)}
-                className={`rounded-moo border px-3 py-2 text-left disabled:opacity-100 ${
-                  current ? "bg-moo-accent text-white border-moo-accent" : "bg-white border-moo-ink/20"
-                }`}
+                title="Take it off the list"
+                onClick={() => api.engineForget(d.name).then(() => setKnown((k) => k.filter((x) => x.name !== d.name))).catch(() => {})}
+                className="rounded-moo border border-moo-ink/10 px-3 text-xs text-moo-ink/60"
               >
-                <div className="font-medium">{d.name}</div>
-                <div className="text-xs opacity-70">
-                  {/app\b/.test(d.name) ? "The Moo app" : "Lent from its browser"} · {d.jobs_done} jobs done
-                  {current ? " · in use now" : " · tap to use"}
-                </div>
+                Forget
               </button>
-            );
-          })}
-        <Button variant="secondary" onClick={() => router.push("/ai/setup")}>
-          Set up a local machine
-        </Button>
-      </Option>
+            )}
+          </div>
+        ))}
+        {engines === null && <Spinner label="Looking for computers…" />}
+        <div className="flex flex-col gap-2 mt-1">
+          <Button onClick={chooseThisDevice} disabled={busy || thisDevice}>
+            {thisDevice ? "This device is set up" : "Set up this device"}
+          </Button>
+          {here && !thisDevice && (
+            <p className="text-xs text-moo-ink/60">
+              {githubPages
+                ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>. This device has to be on the same wifi as the Moo. </>
+                : <>Opens the Moo&apos;s secure address first. </>}
+              Your browser warns once — choose Advanced, then continue.
+            </p>
+          )}
+          {crashed && (
+            <p className="text-sm text-red-600">
+              Last time this browser closed while loading {crashed}. That usually means the device ran out of memory.
+              Choose smaller models under Settings for this device, then set it up again.
+            </p>
+          )}
+          {thisDevice && engine && (
+            <p className="text-sm">
+              {engine.status === "loading"
+                ? `Loading… ${Object.values(engine.progress).map((p) => p.text).join(" · ")}`
+                : engine.status === "error"
+                  ? engine.note
+                  : `Ready · ${engine.model} · ${engine.jobsDone} jobs${engine.lastSeconds ? `, last ${engine.lastSeconds}s` : ""}`}
+            </p>
+          )}
+          <Button variant="secondary" onClick={() => router.push("/ai/setup")}>
+            Set up a local machine
+          </Button>
+          <p className="text-xs text-moo-ink/60">A phone is set up by opening the Moo app on it, on the same wifi as the Moo.</p>
+        </div>
+      </div>
 
       <Option
         active={choice === "cloud"}
