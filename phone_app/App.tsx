@@ -6,13 +6,15 @@
 // The stories and games themselves run on the Moo.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, Pressable, SafeAreaView, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { Linking, Modal, Platform, Pressable, SafeAreaView, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { DEFAULTS, LISTEN_MODELS, PHONE_GB, PHONE_NAME, STORY_MODELS, VOICE_MODELS, fits, load, runJob, unload, voicesOf, type Choice, type Settings } from "./src/ai";
+import { Kitten2Host } from "./src/kitten2";
 import { bye, lend, report, type Job } from "./src/moo";
-import { findMoo, moo, type AiSettings, type Computer, type Game, type GameState, type LentDevice, type LetterState, type StoryState } from "./src/pi";
+import { connectMoo, findMoos } from "./src/ble";
+import { BLUETOOTH, findMoo, moo, type AiSettings, type Computer, type Game, type GameState, type LentDevice, type LetterState, type StoryState } from "./src/pi";
 
 const KIND: Record<string, string> = { chat: "writing", moderate: "checking", transcribe: "listening", speak: "speaking" };
 const PHASE: Record<string, string> = {
@@ -174,6 +176,193 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* --------------------------------------------- finding the Moo by Bluetooth */
+  // Bluetooth finds the Moo nearby with no address to type. The controls work over it; the AI work, with
+  // its sound files, needs the phone on the Moo's wifi, so the app moves to the wifi as soon as it can.
+  const [bleFound, setBleFound] = useState<{ id: string; name: string }[]>([]);
+  const [bleBusy, setBleBusy] = useState(false);
+  const [bleNote, setBleNote] = useState("");
+  const [needsWifi, setNeedsWifi] = useState(false);
+  const [networks, setNetworks] = useState<{ ssid: string; signal: number; secured: boolean }[]>([]);
+  const [wifiPick, setWifiPick] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+
+  const useBluetoothMoo = async (id: string) => {
+    setBleBusy(true);
+    setBleNote("Connecting over Bluetooth…");
+    try {
+      const name = await connectMoo(id);
+      const st = await moo(BLUETOOTH).status();
+      if (st.wifi_connected && st.address) {
+        const overWifi = await findMoo(`http://${st.address}:8000`);
+        if (overWifi) {
+          setBleNote(`Found ${name} by Bluetooth. It is on the wifi ${st.wifi_ssid ?? ""}, and the app uses that now.`);
+          await connect(overWifi, settings);
+          return;
+        }
+        setBase(BLUETOOTH);
+        setBleNote(
+          `Connected to ${name} over Bluetooth. The Moo is on the wifi ${st.wifi_ssid ?? ""}, but this phone cannot reach it there: ` +
+            "put the phone on that wifi so it can do the stories' AI."
+        );
+      } else {
+        setBase(BLUETOOTH);
+        setBleNote(`Connected to ${name} over Bluetooth. The Moo is not on a wifi yet: choose one below.`);
+        openWifi(BLUETOOTH);
+      }
+    } catch (e: any) {
+      setBleNote(String(e?.message ?? e));
+    } finally {
+      setBleBusy(false);
+    }
+  };
+
+  const findByBluetooth = async () => {
+    setBleBusy(true);
+    setBleFound([]);
+    setBleNote("Looking for Moos nearby…");
+    const list: { id: string; name: string }[] = [];
+    try {
+      await findMoos(6, (d) => {
+        list.push(d);
+        setBleFound([...list]);
+      });
+      setBleBusy(false);
+      if (list.length === 0) setBleNote("No Moo found nearby. Is it switched on and close to the phone?");
+      else if (list.length === 1) await useBluetoothMoo(list[0].id);
+      else setBleNote("Tap the Moo to connect to.");
+    } catch (e: any) {
+      setBleBusy(false);
+      setBleNote(String(e?.message ?? e));
+    }
+  };
+
+  /* ----------------------------------------------------- the Moo's wifi, two ways */
+  // 1. Over Bluetooth: the app found the Moo nearby and gives it the home wifi's name and password.
+  // 2. Without Bluetooth: the phone joins the Moo's own wifi (moo- and four digits) and gives it the home
+  //    wifi from there, or the Moo is already on the home wifi and is reached by its address.
+  const [wifiNow, setWifiNow] = useState<string | null>(null);
+  const [wifiNote, setWifiNote] = useState("");
+  const onMooHotspot = !!base && base.includes("10.41.0.1");
+
+  const openWifi = (at: string) => {
+    setNeedsWifi(true);
+    setWifiPick("");
+    setWifiNote("Looking for wifi networks near the Moo…");
+    moo(at)
+      .wifiScan()
+      .then((r) => {
+        setNetworks(r.networks);
+        setWifiNote(r.networks.length ? "Choose the home wifi." : "The Moo sees no wifi networks.");
+      })
+      .catch((e) => setWifiNote(String(e?.message ?? e)));
+  };
+
+  // The Moo's own wifi: give it the home wifi straight away.
+  useEffect(() => {
+    if (onMooHotspot && base) openWifi(base);
+  }, [onMooHotspot]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!base) return;
+    moo(base).status().then((st) => setWifiNow(st.wifi_connected ? st.wifi_ssid ?? "a wifi" : null)).catch(() => {});
+  }, [base]);
+
+  const giveWifi = async () => {
+    if (!base) return;
+    const at = base;
+    setBleBusy(true);
+    setWifiNote(`The Moo is joining ${wifiPick}…`);
+    try {
+      await moo(at).wifiConnect(wifiPick, wifiPassword);
+      setWifiPassword("");
+      if (at === BLUETOOTH) {
+        // Over Bluetooth the link stays while the Moo changes wifi, so the app can wait and see.
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const st = await moo(BLUETOOTH).status().catch(() => null);
+          if (st?.wifi_connected && st.address && st.wifi_ssid === wifiPick) {
+            setNeedsWifi(false);
+            setWifiNow(st.wifi_ssid);
+            const overWifi = await findMoo(`http://${st.address}:8000`);
+            setWifiNote(`The Moo is on ${st.wifi_ssid}.${overWifi ? "" : " Put this phone on the same wifi for the stories' AI."}`);
+            if (overWifi) await connect(overWifi, settings);
+            return;
+          }
+        }
+        setWifiNote("The Moo did not join that wifi. Check the password and try again.");
+      } else {
+        // Over wifi the Moo leaves the network the phone reached it on, so the phone has to follow it.
+        setNeedsWifi(false);
+        setWifiNote(`The Moo is moving to ${wifiPick}. Put this phone on ${wifiPick} too; the app looks for the Moo there.`);
+        stop.current = true;
+        setBase(null);
+        for (let i = 0; i < 24; i++) {
+          await new Promise((r) => setTimeout(r, 5000));
+          const found = await findMoo("http://moo.local:8000");
+          if (found) {
+            setWifiNote(`The Moo is on ${wifiPick}.`);
+            await connect(found, settings);
+            return;
+          }
+        }
+        setWifiNote(`The Moo was not found on ${wifiPick} yet. When the phone is on that wifi, tap Look again.`);
+      }
+    } catch (e: any) {
+      setWifiNote(String(e?.message ?? e));
+    } finally {
+      setBleBusy(false);
+    }
+  };
+
+  const wifiCard = (
+    <View style={styles.card}>
+      <Text style={styles.h2}>The Moo&apos;s wifi</Text>
+      <Text style={styles.small}>
+        {onMooHotspot
+          ? "The phone is on the Moo's own wifi. Give the Moo your home wifi below."
+          : base === BLUETOOTH
+            ? `Connected over Bluetooth. ${wifiNow ? `The Moo is on ${wifiNow}.` : "The Moo is not on a wifi."}`
+            : wifiNow
+              ? `The Moo is on ${wifiNow}.`
+              : "Asking the Moo…"}
+      </Text>
+      {!needsWifi && <Button title="Put the Moo on another wifi" kind="plain" disabled={!base || bleBusy} onPress={() => base && openWifi(base)} />}
+      {needsWifi && (
+        <View style={{ gap: 8 }}>
+          {networks.map((n) => (
+            <Pressable key={n.ssid} onPress={() => setWifiPick(n.ssid)} style={[styles.choice, wifiPick === n.ssid && styles.choiceOn]}>
+              <Text style={[styles.choiceText, wifiPick === n.ssid && styles.choiceTextOn]}>{n.ssid}{n.secured ? "" : " · open"}</Text>
+            </Pressable>
+          ))}
+          {!!wifiPick && (
+            <>
+              <TextInput style={styles.input} value={wifiPassword} onChangeText={setWifiPassword} placeholder="Wifi password" secureTextEntry autoCapitalize="none" autoCorrect={false} />
+              <Button title={`Put the Moo on ${wifiPick}`} disabled={bleBusy} onPress={giveWifi} />
+            </>
+          )}
+          <Button title="Cancel" kind="plain" onPress={() => setNeedsWifi(false)} />
+        </View>
+      )}
+      {!!wifiNote && <Text style={styles.small}>{wifiNote}</Text>}
+    </View>
+  );
+
+  const bluetoothCard = (
+    <View style={styles.card}>
+      <Text style={styles.h2}>Connect with Bluetooth</Text>
+      <Text style={styles.small}>Finds the Moo nearby, with no address to type. It can also put the Moo on a wifi.</Text>
+      <Button title={bleBusy ? "Working…" : "Find the Moo with Bluetooth"} kind="plain" disabled={bleBusy} onPress={findByBluetooth} />
+      {bleFound.length > 1 &&
+        bleFound.map((d) => (
+          <Pressable key={d.id} disabled={bleBusy} onPress={() => useBluetoothMoo(d.id)} style={styles.choice}>
+            <Text style={styles.choiceText}>{d.name}</Text>
+          </Pressable>
+        ))}
+      {!!bleNote && <Text style={styles.small}>{bleNote}</Text>}
+    </View>
+  );
+
   useEffect(() => {
     (async () => {
       const saved = (await AsyncStorage.getItem(ADDRESS_KEY).catch(() => null)) ?? "http://moo.local:8000";
@@ -261,7 +450,7 @@ export default function App() {
       text: ready ? `Models loaded · ${jobs} jobs done here` : engine === "loading" ? "Loading its models…" : "Not doing AI right now",
       current: lentNow && !!me?.current,
       use: async () => {
-        if (stop.current && base) startEngine(base, settings);
+        if (stop.current && base && base !== BLUETOOTH) startEngine(base, settings);
         await api!.useLent(PHONE_NAME);
       },
     });
@@ -429,8 +618,129 @@ export default function App() {
   const engineLine =
     engine === "off" ? "Not doing the Moo's AI" : engine === "loading" ? "Getting the models ready…" :
     engine === "working" ? `Working for Moo: ${last}` : engine === "error" ? "The AI stopped with a problem" : "Ready: this phone is the Moo's AI";
+  /* ------------------------------------------------------- the connection wizard */
+  // One step at a time, from a Moo that is connected to nothing to a story. The step follows from what is
+  // true now, so the wizard can be opened at any point and shows the next thing to do.
+  const [wizard, setWizard] = useState<null | "how" | "ble" | "hotspot" | "address">(null);
+  const step: "how" | "ble" | "hotspot" | "address" | "wifi" | "phone" | "done" = !wizard
+    ? "how"
+    : !base
+      ? wizard
+      : needsWifi || onMooHotspot
+        ? "wifi"
+        : base === BLUETOOTH
+          ? "phone"
+          : "done";
+  const STEP_NO: Record<typeof step, number> = { how: 1, ble: 2, hotspot: 2, address: 2, wifi: 3, phone: 4, done: 5 };
+  const openWizard = () => {
+    setWizard("how");
+    setBleNote("");
+    setWifiNote("");
+  };
+  const wizardBody =
+    step === "how" ? (
+      <>
+        <Text style={styles.wizTitle}>How shall the phone find the Moo?</Text>
+        <Text style={styles.body}>Switch the Moo on and keep the phone close to it.</Text>
+        <Pressable style={styles.choice} onPress={() => { setWizard("ble"); findByBluetooth(); }}>
+          <Text style={styles.choiceText}>With Bluetooth (easiest)</Text>
+          <Text style={styles.small}>The phone finds the Moo nearby. Nothing to type but your wifi password.</Text>
+        </Pressable>
+        <Pressable style={styles.choice} onPress={() => setWizard("hotspot")}>
+          <Text style={styles.choiceText}>Through the Moo&apos;s own wifi</Text>
+          <Text style={styles.small}>A Moo that is on no wifi makes its own, named moo- and four digits. The phone joins it for a moment.</Text>
+        </Pressable>
+        <Pressable style={styles.choice} onPress={() => setWizard("address")}>
+          <Text style={styles.choiceText}>It is already on my wifi</Text>
+          <Text style={styles.small}>Type the Moo&apos;s address, if the app did not find it by itself.</Text>
+        </Pressable>
+      </>
+    ) : step === "ble" ? (
+      <>
+        <Text style={styles.wizTitle}>Finding the Moo with Bluetooth</Text>
+        <Text style={styles.body}>If the phone asks to allow Bluetooth or to pair with the Moo, say yes.</Text>
+        {bleFound.length > 1 &&
+          bleFound.map((d) => (
+            <Pressable key={d.id} disabled={bleBusy} onPress={() => useBluetoothMoo(d.id)} style={styles.choice}>
+              <Text style={styles.choiceText}>{d.name}</Text>
+            </Pressable>
+          ))}
+        {!!bleNote && <Text style={styles.small}>{bleNote}</Text>}
+        <Button title={bleBusy ? "Looking…" : "Look again"} kind="plain" disabled={bleBusy} onPress={findByBluetooth} />
+      </>
+    ) : step === "hotspot" ? (
+      <>
+        <Text style={styles.wizTitle}>Join the Moo&apos;s own wifi</Text>
+        <Text style={styles.body}>
+          1. Open the phone&apos;s Settings, then Wi-Fi.{"\n"}2. Join the network named moo- and four digits. It has no password.{"\n"}3. Come back
+          to this app.
+        </Text>
+        <Button title="Open the phone's Settings" kind="plain" onPress={() => Linking.openSettings().catch(() => {})} />
+        <Button title={searching ? "Looking for the Moo…" : "I have joined it"} disabled={searching} onPress={() => connect("http://10.41.0.1:8000", settings)} />
+        {!!note && <Text style={styles.small}>{note}</Text>}
+      </>
+    ) : step === "address" ? (
+      <>
+        <Text style={styles.wizTitle}>The Moo&apos;s address</Text>
+        <Text style={styles.body}>The Moo&apos;s screen on the website shows it, or your router&apos;s list of devices. It looks like http://192.168.2.52:8000</Text>
+        <TextInput style={styles.input} value={address} onChangeText={setAddress} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
+        <Button title={searching ? "Looking for the Moo…" : "Connect"} disabled={searching} onPress={() => connect(address, settings)} />
+        {!!note && <Text style={styles.small}>{note}</Text>}
+      </>
+    ) : step === "wifi" ? (
+      <>
+        <Text style={styles.wizTitle}>Give the Moo your wifi</Text>
+        <Text style={styles.body}>Choose the wifi of your home and type its password. The Moo remembers it.</Text>
+        {!needsWifi && <Button title="Show the networks" kind="plain" onPress={() => base && openWifi(base)} />}
+        {networks.map((n) => (
+          <Pressable key={n.ssid} onPress={() => setWifiPick(n.ssid)} style={[styles.choice, wifiPick === n.ssid && styles.choiceOn]}>
+            <Text style={[styles.choiceText, wifiPick === n.ssid && styles.choiceTextOn]}>{n.ssid}{n.secured ? "" : " · open"}</Text>
+          </Pressable>
+        ))}
+        {!!wifiPick && (
+          <>
+            <TextInput style={styles.input} value={wifiPassword} onChangeText={setWifiPassword} placeholder="Wifi password" secureTextEntry autoCapitalize="none" autoCorrect={false} />
+            <Button title={bleBusy ? "The Moo is joining…" : `Put the Moo on ${wifiPick}`} disabled={bleBusy} onPress={giveWifi} />
+          </>
+        )}
+        {!!wifiNote && <Text style={styles.small}>{wifiNote}</Text>}
+      </>
+    ) : step === "phone" ? (
+      <>
+        <Text style={styles.wizTitle}>Put the phone on the same wifi</Text>
+        <Text style={styles.body}>
+          The Moo is on {wifiNow ?? "a wifi"}. The phone does the stories&apos; thinking, so it has to be on {wifiNow ?? "that wifi"} too.
+        </Text>
+        <Button title="Open the phone's Settings" kind="plain" onPress={() => Linking.openSettings().catch(() => {})} />
+        <Button title={bleBusy ? "Checking…" : "Check again"} disabled={bleBusy} onPress={findByBluetooth} />
+        {!!bleNote && <Text style={styles.small}>{bleNote}</Text>}
+      </>
+    ) : (
+      <>
+        <Text style={styles.wizTitle}>The Moo is connected</Text>
+        <Text style={styles.body}>
+          {wifiNow ? `The Moo is on ${wifiNow}, and this phone reaches it there. ` : "This phone reaches the Moo. "}
+          {ready ? "The phone's AI is ready." : engine === "loading" ? "The phone is getting its models ready; the first time takes a few minutes." : ""}
+        </Text>
+        <Button title="Start a story" disabled={!ready} onPress={() => { setWizard(null); setTab("story"); }} />
+      </>
+    );
+  const wizardModal = (
+    <Modal visible={!!wizard} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setWizard(null)}>
+      <SafeAreaView style={styles.page}>
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <Text style={styles.small}>Set up a Moo · step {STEP_NO[step]} of 5</Text>
+          <View style={styles.card}>{wizardBody}</View>
+          {step !== "how" && step !== "done" && <Button title="Back to the start" kind="plain" onPress={() => setWizard("how")} />}
+          <Button title="Close" kind="plain" onPress={() => setWizard(null)} />
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+
   const phoneScreen = (
     <>
+      <Button title="Set up a Moo, step by step" onPress={openWizard} />
       {devicesCard}
       <View style={[styles.card, styles.now]}>
         <Text style={styles.h2}>{engineLine}</Text>
@@ -441,7 +751,7 @@ export default function App() {
         {jobs > 0 && <Text style={styles.small}>{jobs} jobs done{last ? ` · last: ${last}` : ""}</Text>}
         {PHONE_GB > 0 && <Text style={styles.small}>This phone has {PHONE_GB.toFixed(1)} GB of memory. Only the models that fit are shown.</Text>}
         {engine === "off" || engine === "error" ? (
-          <Button title="Be the Moo's AI" disabled={!base} onPress={() => base && startEngine(base, settings)} />
+          <Button title="Be the Moo's AI" disabled={!base} onPress={() => base && base !== BLUETOOTH && startEngine(base, settings)} />
         ) : (
           <>
             <Button title="Hear a test line on the Moo" kind="plain" disabled={!ready} onPress={() => act(() => api!.testVoice().then((r) => setNote(`Moo said: “${r.line}”`)))} />
@@ -456,6 +766,8 @@ export default function App() {
         <Text style={styles.small}>Most Android phones need the number form, such as http://192.168.2.52:8000</Text>
         <Button title={searching ? "Looking for the Moo…" : "Connect"} kind="plain" disabled={searching} onPress={() => connect(address, settings)} />
       </View>
+      {bluetoothCard}
+      {!!base && wifiCard}
 
       <Picker title="Story model" choices={STORY_MODELS} value={settings.story} onChange={(id) => change({ story: id })} disabled={engine === "loading"} />
       <Picker title="Listening model" choices={LISTEN_MODELS} value={settings.listen} onChange={(id) => change({ listen: id })} disabled={engine === "loading"} />
@@ -480,6 +792,8 @@ export default function App() {
   return (
     <SafeAreaView style={styles.page}>
       <StatusBar style="dark" />
+      {wizardModal}
+      <Kitten2Host />
       <View style={styles.header}>
         <Text style={styles.h1}>Moo</Text>
         <Text style={styles.small}>
@@ -488,14 +802,22 @@ export default function App() {
       </View>
       <ScrollView contentContainerStyle={styles.scroll}>
         {!!note && <Text style={styles.warn}>{note}</Text>}
+        {!!base && (needsWifi || onMooHotspot) && tab !== "phone" && wifiCard}
         {tab !== "phone" && tab !== "letters" && !!base && !!needAi && <Text style={styles.small}>{needAi}</Text>}
         {!base && !searching && tab !== "phone" ? (
           <View style={styles.card}>
             <Text style={styles.h2}>No Moo found</Text>
-            <Text style={styles.body}>Put the phone on the same wifi as the Moo. If it still is not found, type the Moo's address under This phone.</Text>
-            <Button title="Look again" onPress={() => connect(address, settings)} />
+            <Text style={styles.body}>Put the phone on the same wifi as the Moo, or find it with Bluetooth below.</Text>
+            <Text style={styles.small}>
+              Without Bluetooth: open the phone&apos;s wifi settings, join the Moo&apos;s own wifi (named moo- and four digits), come back and tap
+              Look again. Or type the Moo&apos;s address under This phone.
+            </Text>
+            <Button title="Set up a Moo, step by step" onPress={openWizard} />
+            <Button title="Look again" kind="plain" onPress={() => connect(address, settings)} />
           </View>
-        ) : tab === "story" ? storyScreen : tab === "games" ? gamesScreen : tab === "letters" ? lettersScreen : phoneScreen}
+        ) : null}
+        {!base && !searching && tab !== "phone" && bluetoothCard}
+        {!base && !searching && tab !== "phone" ? null : tab === "story" ? storyScreen : tab === "games" ? gamesScreen : tab === "letters" ? lettersScreen : phoneScreen}
       </ScrollView>
       <View style={styles.tabs}>
         {TABS.map((t) => (
@@ -519,6 +841,7 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, color: INK, lineHeight: 21 },
   small: { fontSize: 13, color: INK, opacity: 0.75 },
   phase: { fontSize: 16, fontWeight: "600", color: ACCENT },
+  wizTitle: { fontSize: 22, fontWeight: "700", color: INK },
   quote: { fontSize: 15, color: INK, fontStyle: "italic", lineHeight: 21 },
   warn: { fontSize: 14, color: "#b91c1c" },
   code: { fontSize: 13, color: INK, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace", backgroundColor: "#f4efe6", padding: 8, borderRadius: 8 },

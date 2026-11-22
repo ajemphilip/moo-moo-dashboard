@@ -16,6 +16,7 @@ import {
   models,
   setTelemetryEnabled,
 } from "react-native-executorch";
+import { loadKitten2, speakKitten2 } from "./kitten2";
 import type { Job, JobResult } from "./moo";
 import { b64ToBytes, bytesToB64, floatsToWav, wavTo16k } from "./wav";
 
@@ -56,6 +57,13 @@ export const LISTEN_MODELS: (Choice & { config: () => any })[] = [
   { id: "small", label: "Whisper small — hears best", minGB: 8, config: () => M.speechToText.WHISPER.EN.SMALL.DEFAULT },
 ];
 
+// The voices each Kitten 2 size carries, from the models' own config files.
+const KITTEN2_VOICES: Record<"pico" | "nano" | "mini", string[]> = {
+  pico: ["Eleanor", "Edith", "Otis", "Frank"],
+  nano: ["Eleanor", "Martha", "Serena", "Iris", "Grace", "Edith", "Otis", "Vincent", "Max", "Danny"],
+  mini: ["Eleanor", "Martha", "Serena", "Iris", "Grace", "Edith", "Diana", "Otis", "Vincent", "Max", "Danny"],
+};
+
 // Voice models. Kokoro was the maker's favourite on the Mac. Supertonic 3 is
 // quick and bright; Reverb is the largest and reads like a narrator.
 export const VOICE_MODELS: (Choice & { config: () => any; voices: Choice[] })[] = [
@@ -72,6 +80,18 @@ export const VOICE_MODELS: (Choice & { config: () => any; voices: Choice[] })[] 
       { id: "am_santa", label: "Santa" },
     ],
   },
+  // Kitten TTS 2, the small models the maker ranked among his favourites on the Mac. They run in a hidden
+  // web view with kitten-tts-2-browser (see kitten2.tsx).
+  ...(["pico", "nano", "mini"] as const).map((size) => ({
+    id: `kitten2-${size}`,
+    label:
+      size === "pico" ? "Kitten 2 Pico — quickest, 8 MB" :
+      size === "nano" ? "Kitten 2 Nano — natural and quick, 17 MB" :
+      "Kitten 2 Mini — the best Kitten 2, 83 MB",
+    minGB: size === "mini" ? 4 : undefined,
+    config: () => ({ kitten2: size }),
+    voices: KITTEN2_VOICES[size].map((v) => ({ id: v, label: v })),
+  })),
   {
     id: "supertonic",
     label: "Supertonic 3 — quick and bright",
@@ -94,6 +114,7 @@ export const VOICE_MODELS: (Choice & { config: () => any; voices: Choice[] })[] 
     ],
   },
 ];
+
 
 export const voicesOf = (engine: string): Choice[] =>
   (VOICE_MODELS.find((m) => m.id === engine) ?? VOICE_MODELS[0]).voices;
@@ -133,6 +154,14 @@ let voice = DEFAULTS.voice;
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
+/** Free the voice model's memory: Kitten 2 releases, the others dispose. */
+function freeVoice() {
+  if (tts?.dispose) tts.dispose();
+  else tts?.release?.();
+  tts = null;
+  ttsId = "";
+}
+
 /** Fetch what is missing and load it. Called at the start and whenever a
  *  choice changes; a model that did not change stays loaded. */
 export async function load(s: Settings, onProgress: Progress) {
@@ -151,8 +180,18 @@ export async function load(s: Settings, onProgress: Progress) {
   onProgress("listening", "Ready");
 
   if (ttsId !== s.engine) {
-    tts?.dispose?.();
-    tts = null;
+    freeVoice();
+    const pick = VOICE_MODELS.find((m) => m.id === s.engine) ?? VOICE_MODELS[0];
+    const kitten = pick.config().kitten2 as "pico" | "nano" | "mini" | undefined;
+    if (kitten) {
+      onProgress("voice", "Fetching…");
+      await loadKitten2(kitten, (text) => onProgress("voice", text));
+      tts = { kitten2: kitten }; // the model itself lives in the web view
+      ttsId = pick.id;
+      onProgress("voice", "Ready");
+    }
+  }
+  if (ttsId !== s.engine) {
     const pick = VOICE_MODELS.find((m) => m.id === s.engine) ?? VOICE_MODELS[0];
     onProgress("voice", "Fetching…");
     const files = await download(pick.config(), {
@@ -178,7 +217,7 @@ export async function load(s: Settings, onProgress: Progress) {
 
 export function unload() {
   stt?.dispose?.();
-  tts?.dispose?.();
+  freeVoice();
   stt = null;
   tts = null;
   ttsId = "";
@@ -273,6 +312,9 @@ export async function runJob(job: Job): Promise<JobResult> {
       ttsId === "supertonic" ? { voiceStyle: v, lang: "en", speed: 1.0 } :
       ttsId === "reverb" ? { voice: v, language: "en", speed: 1.0 } :
       { voice: v, speed: 1.0 };
+    if (ttsId.startsWith("kitten2-")) {
+      return { wav_b64: await speakKitten2(text, v) };
+    }
     for await (const chunk of tts.synthesize(text, options)) {
       parts.push(chunk.audio);
       if (chunk.sampleRate) rate = chunk.sampleRate;

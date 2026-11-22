@@ -33,6 +33,14 @@
             "minSdkVersion": 26
           }
         }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Moo uses Bluetooth to find your Moo storyteller nearby and connect to it."
+        }
       ]
     ],
     "android": {

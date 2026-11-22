@@ -1,6 +1,8 @@
 // The Moo's own controls, the same calls the Moo website makes. The stories
 // and games run on the Moo; the app starts them, follows them and stops them.
 
+import { bleRequest } from "./ble";
+
 const HEADERS = { "Content-Type": "application/json", "X-Moo-Setup": "1" };
 
 export class MooError extends Error {
@@ -9,7 +11,17 @@ export class MooError extends Error {
   }
 }
 
+/** The Moo reached over Bluetooth instead of an address on the wifi. */
+export const BLUETOOTH = "bluetooth";
+
 async function call<T>(base: string, path: string, body?: unknown): Promise<T> {
+  if (base === BLUETOOTH) {
+    try {
+      return await bleRequest<T>(body === undefined ? "GET" : "POST", path, body);
+    } catch (e: any) {
+      throw new MooError(e?.status ?? 0, String(e?.message ?? e));
+    }
+  }
   let r: Response;
   try {
     r = await fetch(`${base}${path}`, {
@@ -29,6 +41,7 @@ async function call<T>(base: string, path: string, body?: unknown): Promise<T> {
 
 export interface Status {
   configured: boolean;
+  address?: string | null; // the Moo's address on the home wifi
   wifi_connected: boolean;
   wifi_ssid?: string | null;
   device_id: string;
@@ -88,6 +101,8 @@ export interface AiSettings {
 
 export const moo = (base: string) => ({
   status: () => call<Status>(base, "/status"),
+  wifiScan: () => call<{ networks: { ssid: string; signal: number; secured: boolean }[] }>(base, "/wifi/scan"),
+  wifiConnect: (ssid: string, password: string) => call<{ ok?: boolean; message?: string }>(base, "/wifi/connect", { ssid, password }),
   useThisPhone: () => call<unknown>(base, "/ai", { mode: "browser" }),
   aiGet: () => call<AiSettings>(base, "/ai"),
   computers: () => call<{ engines: Computer[] }>(base, "/ai/discover"),
