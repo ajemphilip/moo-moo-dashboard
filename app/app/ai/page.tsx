@@ -20,6 +20,7 @@ import {
   crashedWhileLoading,
   deviceChoice,
   KITTEN_VOICES,
+  KITTEN2_VOICES,
   LISTEN_CHOICES,
   MEMORY_CHOICES,
   reloadModels,
@@ -87,7 +88,7 @@ function AiPageInner() {
   const [test, setTest] = useState<AiTest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crashed, setCrashed] = useState<string | null>(null);
-  const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" });
+  const [mine, setMine] = useState({ story: "", listen: "", voice: "", kittenVoice: "Bruno", kitten2Voice: "Eleanor", single: "" });
 
   const here = typeof window !== "undefined" ? canRunHere() : null;
   const secureUrl =
@@ -164,7 +165,7 @@ function AiPageInner() {
   }
 
   // The models this device runs are kept on this device.
-  const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string; single: string }>) => {
+  const chooseMine = (c: Partial<{ story: string; listen: string; voice: string; kittenVoice: string; kitten2Voice: string; single: string }>) => {
     setDeviceChoice(c);
     setMine(deviceChoice());
     // Takes effect at once: only the model that changed is loaded again.
@@ -191,6 +192,10 @@ function AiPageInner() {
   const usesKitten =
     mine.voice.startsWith("kitten-") ||
     (mine.voice === "" && typeof navigator !== "undefined" && /iPhone|iPad|iPod/.test(navigator.userAgent));
+  // Kitten 2 carries its own voices, fewer in the Pico than in the Nano.
+  const usesKitten2 = mine.voice.startsWith("kitten2-");
+  const kitten2Voices = KITTEN2_VOICES[mine.voice.slice("kitten2-".length)] ?? [];
+  const kitten2Voice = kitten2Voices.includes(mine.kitten2Voice) ? mine.kitten2Voice : kitten2Voices[0];
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
   const choice: Choice | null =
@@ -234,7 +239,11 @@ function AiPageInner() {
               { what: "Listening", value: labelOf(LISTEN_CHOICES, mine.listen) },
               {
                 what: "Voice",
-                value: usesKitten ? `${labelOf(VOICE_CHOICES, mine.voice || "kitten-mini")}, ${mine.kittenVoice}` : `Kokoro, ${labelOf(options?.voices, settings?.voice) || "Heart"}`,
+                value: usesKitten2
+                  ? `${labelOf(VOICE_CHOICES, mine.voice)}, ${kitten2Voice}`
+                  : usesKitten
+                    ? `${labelOf(VOICE_CHOICES, mine.voice || "kitten-mini")}, ${mine.kittenVoice}`
+                    : `Kokoro, ${labelOf(options?.voices, settings?.voice) || "Heart"}`,
               },
               { what: "Memory", value: labelOf(MEMORY_CHOICES, mine.single) },
             ]
@@ -437,6 +446,14 @@ function AiPageInner() {
                   onChange={(v) => chooseMine({ kittenVoice: v })}
                 />
               )}
+              {usesKitten2 && (
+                <Select
+                  label="Voice on this device"
+                  value={kitten2Voice}
+                  choices={kitten2Voices.map((v) => ({ id: v, label: v }))}
+                  onChange={(v) => chooseMine({ kitten2Voice: v })}
+                />
+              )}
               <Select
                 label="Memory on this device"
                 value={mine.single}
@@ -537,7 +554,7 @@ function AiPageInner() {
               onChange={(v) => save({ voice: v })}
             />
           )}
-          {!options.voices_by_engine && !(options.mode === "browser" && !here && usesKitten) && options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
+          {!options.voices_by_engine && !(options.mode === "browser" && !here && (usesKitten || usesKitten2)) && options.mode !== "cloud" && options.voices && options.voices.length > 0 &&
             settings?.voice_engine !== "chatterbox" && settings?.voice_engine !== "orpheus" && (
             <Select
               label="Voice"

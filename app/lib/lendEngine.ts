@@ -4,7 +4,7 @@
  * Three models run here, on the device's own graphics chip:
  *   story and checks  — a small Llama 3.2 through WebLLM
  *   the child's speech — Whisper through transformers.js
- *   Moo's voice        — Kokoro through kokoro-js
+ *   Moo's voice        — Kokoro through kokoro-js, or a Kitten voice
  *
  * The page asks the Moo for work (/engine/next), does it, and posts the
  * result (/engine/result). The Moo never has to reach this device.
@@ -34,6 +34,9 @@ const LIB = {
   kokoro: "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js",
   // Kitten TTS written for phone browsers: no wasm, about 130 MB at its peak.
   kitten: "https://cdn.jsdelivr.net/npm/kitten-tts-webgpu@0.1.1/dist-lib/index.js",
+  // Kitten TTS 2 Nano and Pico, the voice of the Instant tier: runs on the
+  // processor and reads text into sounds the way the Python package does.
+  kitten2: "https://cdn.jsdelivr.net/gh/ajemphilip/kitten-tts-2-browser@v0.1.0/src/index.js",
 };
 const load = (url: string): Promise<any> => import(/* webpackIgnore: true */ url);
 
@@ -85,6 +88,7 @@ export interface DeviceChoice {
   listen: string; // "" = follow the size preset
   voice: string; // "" = automatic: Kitten on iPhone and iPad, Kokoro elsewhere
   kittenVoice: string; // the Kitten voice of this device
+  kitten2Voice: string; // the Kitten 2 voice of this device
   single: string; // "on" = one model at a time, anything else = all at once
 }
 const CHOICE_KEY = "moo_device_models";
@@ -110,12 +114,19 @@ export const VOICE_CHOICES: { id: string; label: string }[] = [
   { id: "", label: "Automatic — Kitten mini on iPhone and iPad, Kokoro on computers" },
   { id: "kitten-nano", label: "Kitten nano — lightest, 24 MB, for phones" },
   { id: "kitten-micro", label: "Kitten micro — 41 MB, for phones" },
-  { id: "kitten-mini", label: "Kitten mini — 78 MB, best Kitten" },
+  { id: "kitten-mini", label: "Kitten mini — 78 MB, best of the first Kitten" },
+  { id: "kitten2-pico", label: "Kitten 2 Pico — clearer than the first Kitten, quickest; about 40 MB to fetch" },
+  { id: "kitten2-nano", label: "Kitten 2 Nano — clearer than the first Kitten; about 55 MB to fetch" },
   { id: "kokoro", label: "Kokoro — most natural, for computers; too heavy for a phone browser" },
   { id: "kokoro-gpu", label: "Kokoro on the graphics chip — for computers; too heavy for a phone browser" },
 ];
 export const KITTEN_VOICES = ["Bruno", "Hugo", "Jasper", "Leo", "Kiki", "Luna", "Rosie", "Bella"];
-const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno", single: "" };
+// The voices each Kitten 2 model carries. Eleanor is the voice of the Instant tier.
+export const KITTEN2_VOICES: Record<string, string[]> = {
+  pico: ["Eleanor", "Edith", "Otis", "Frank"],
+  nano: ["Eleanor", "Martha", "Serena", "Iris", "Grace", "Edith", "Otis", "Vincent", "Max", "Danny"],
+};
+const NO_CHOICE: DeviceChoice = { story: "", listen: "", voice: "", kittenVoice: "Bruno", kitten2Voice: "Eleanor", single: "" };
 export const MEMORY_CHOICES: { id: string; label: string }[] = [
   { id: "", label: "All three at once — the usual way" },
   { id: "on", label: "One model at a time — an experiment, slower" },
@@ -129,7 +140,7 @@ export function deviceChoice(): DeviceChoice {
   }
 }
 
-/** The voice model this device runs: a Kitten size, or "kokoro". */
+/** The voice model this device runs: a Kitten size, a Kitten 2 size, or "kokoro". */
 function voiceEngine(): string {
   return deviceChoice().voice || (isIOS() ? "kitten-mini" : "kokoro");
 }
@@ -252,8 +263,27 @@ async function loadListen(onProgress: Progress, quality: Quality) {
 
 async function loadVoice(onProgress: Progress) {
   const wantVoice = voiceEngine();
-  if (tts && ttsLoaded !== wantVoice) tts = null;
-  if (!tts && wantVoice.startsWith("kitten-")) {
+  if (tts && ttsLoaded !== wantVoice) {
+    await tts.kitten2?.release?.().catch(() => {});
+    tts = null;
+  }
+  if (!tts && wantVoice.startsWith("kitten2-")) {
+    // Kitten 2 runs on the processor (WebAssembly), not on the graphics chip,
+    // so it does not compete with the story model for the chip's memory.
+    const lib = await load(LIB.kitten2);
+    const model = wantVoice.slice("kitten2-".length);
+    onProgress({ part: "voice", text: `Loading the Kitten 2 ${model} voice…`, done: false });
+    mark(`the Kitten 2 ${model} voice`);
+    const engine = await lib.KittenTTS2.load({
+      model,
+      onProgress: (p: { stage: string; file?: string; loaded?: number; total?: number }) => {
+        if (p.stage !== "download" || !p.file) return;
+        const size = p.total ? `${Math.min(100, Math.round((100 * (p.loaded ?? 0)) / p.total))}%` : `${((p.loaded ?? 0) / 1e6).toFixed(1)} MB`;
+        onProgress({ part: "voice", text: `${p.file.split("/").pop()} ${size}`, done: false });
+      },
+    });
+    tts = { kitten2: engine, model };
+  } else if (!tts && wantVoice.startsWith("kitten-")) {
     // Kokoro closed the page on the iPhone 16 Pro even with the smallest
     // story model (21 November 2026). Kitten runs on the graphics chip
     // without wasm and needs far less memory.
@@ -299,9 +329,10 @@ async function unloadListen() {
 }
 
 async function unloadVoice() {
-  // Kitten has no way to be unloaded and is small, so it stays.
+  // The first Kitten has no way to be unloaded and is small, so it stays.
   if (!tts || tts.kitten) return;
-  await tts.model?.dispose?.();
+  if (tts.kitten2) await tts.kitten2.release().catch(() => {});
+  else await tts.model?.dispose?.();
   tts = null;
 }
 
@@ -455,6 +486,13 @@ async function runJob(job: Job): Promise<Record<string, unknown>> {
     if (audio.length < 1600) return { text: "" };
     const r = await asr(audio);
     return { text: (r?.text ?? "").trim() };
+  }
+  if (job.kind === "speak" && tts?.kitten2) {
+    // The whole text at once: Kitten 2 pauses at full stops by itself.
+    const names: string[] = tts.kitten2.voices.map((v: { name: string }) => v.name);
+    const want = deviceChoice().kitten2Voice;
+    const wav = await tts.kitten2.generateWav(String(p.text ?? ""), { voice: names.includes(want) ? want : names[0] });
+    return { wav_b64: bytesToB64(wav) };
   }
   if (job.kind === "speak" && tts?.kitten) {
     return { wav_b64: bytesToB64(await kittenSpeak(String(p.text ?? ""))) };
