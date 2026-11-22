@@ -118,9 +118,11 @@ export default function AiSetupPage() {
       <div className="moo-card flex flex-col gap-2">
         <h2 className="font-semibold">1 · A computer: Windows, Mac or Linux</h2>
         <p className="text-sm text-moo-ink/80">
-          The best quality. On that computer, download Moo Local and open the file. It installs everything into your
-          home folder (about 6 GB, so allow some time), downloads a story model and the voices, and starts Moo Local.
-          It then starts by itself whenever someone logs in, and the computer appears under Local machines.
+          The best quality. On that computer, download Moo Local and open the file. It installs Moo Local into your
+          home folder (about 2 GB of programs, so allow some time) and starts it. It then starts by itself whenever
+          someone logs in, and the computer appears under Devices. No AI model is downloaded yet: choose the story,
+          listening and voice models afterwards under Models on the AI engine screen. A model too big for that
+          computer is refused, with a smaller one to try.
         </p>
         {detected === null && (
           <p className="text-xs text-moo-ink/70">

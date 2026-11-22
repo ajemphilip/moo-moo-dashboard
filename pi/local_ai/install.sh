@@ -13,7 +13,8 @@
 #   ~/.moo-local-venv         Moo Local's libraries
 #   ~/.moo-kitten2-venv       Kitten TTS 2's libraries
 #   ~/.moo-local/ollama       Ollama, on a Mac that does not have it yet
-# It downloads one story model (gemma3:4b) and the voices, about 6 GB, then
+# It downloads no AI models: the parent chooses them afterwards on the Moo's
+# AI engine screen, and Moo Local refuses one too big for this computer. It
 # starts Moo Local and sets it to start again at every login. Run it again
 # at any time to update.
 set -uo pipefail
@@ -23,7 +24,6 @@ ROOT="$HOME/.moo-local"
 APP="$ROOT/app"
 VENV="$HOME/.moo-local-venv"
 KVENV="$HOME/.moo-kitten2-venv"
-STORY_MODEL="${MOO_LOCAL_CHAT_MODEL:-gemma3:4b}"
 UV_VERSION="0.13.9"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -122,27 +122,6 @@ if [ "$OS" = "Linux" ] || [ "$ARCH" = "arm64" ]; then
     || echo "Kitten TTS 2 could not be installed; Moo Local works without it."
 fi
 
-if [ -z "${MOO_LOCAL_NO_MODELS:-}" ]; then  # (set only to test the installer)
-# --- Voices --------------------------------------------------------------------
-say "Voices"
-K="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-for f in kokoro-v1.0.onnx voices-v1.0.bin; do
-  [ -s "$ROOT/kokoro/$f" ] || { curl -fL --progress-bar "$K/$f" -o "$ROOT/kokoro/$f.part" && mv "$ROOT/kokoro/$f.part" "$ROOT/kokoro/$f"; } \
-    || echo "Kokoro's $f could not be downloaded."
-done
-P="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
-for v in amy/medium/en_US-amy-medium kristin/medium/en_US-kristin-medium ryan/high/en_US-ryan-high; do
-  n="$(basename "$v")"
-  [ -s "$ROOT/voices/$n.onnx" ] || curl -fsSL "$P/$v.onnx" -o "$ROOT/voices/$n.onnx" || rm -f "$ROOT/voices/$n.onnx"
-  [ -s "$ROOT/voices/$n.onnx.json" ] || curl -fsSL "$P/$v.onnx.json" -o "$ROOT/voices/$n.onnx.json" || rm -f "$ROOT/voices/$n.onnx.json"
-done
-(cd "$APP" && "$VENV/bin/python" moo_local.py --prepare) || echo "Some voices could not be prepared; Moo Local uses the others."
-
-# --- Story model ---------------------------------------------------------------
-say "Story model $STORY_MODEL (about 3 GB the first time)"
-"$OLLAMA" pull "$STORY_MODEL" || fail "the story model could not be downloaded."
-fi
-
 # --- Start now and at every login ------------------------------------------------
 say "Starting Moo Local"
 if [ "$OS" = "Darwin" ]; then
@@ -223,6 +202,7 @@ cat <<EOF
 
 Moo Local is running on this computer, and starts by itself at every login.
 On the Moo website, open AI engine: this computer appears under Local
-machines. Choose it there. This window can be closed.
+machines. Choose it there, then pick the story, listening and voice models
+to download under Models. This window can be closed.
 EOF
 done_ok

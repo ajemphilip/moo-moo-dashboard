@@ -4,7 +4,7 @@ rem from the Moo and runs it. The Moo filled in its own address below.
 title Moo Local
 set "MOO=__MOO_URL__"
 echo Setting up Moo Local from the Moo at %MOO% ...
-echo This takes a while the first time, about 6 GB to download.
+echo This takes a while the first time: about 2 GB of programs. The AI models are chosen later on the Moo's AI engine screen.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%MOO%/local-ai/install.ps1' -OutFile (Join-Path $env:TEMP 'moo-local-install.ps1')"
 if errorlevel 1 (
   echo.

@@ -8,8 +8,8 @@
 #   %USERPROFILE%\.moo-local-venv      Moo Local's libraries
 #   %USERPROFILE%\.moo-kitten2-venv    Kitten TTS 2's libraries
 # Ollama comes from winget, or from Ollama's own installer when winget is
-# missing. It downloads one story model (gemma3:4b) and the voices, about
-# 6 GB, then starts Moo Local and adds it to the Startup folder. Windows asks
+# missing. It downloads no AI models: the parent chooses them afterwards on
+# the Moo's AI engine screen. It starts Moo Local and adds it to the Startup folder. Windows asks
 # once (an administrator "Yes") to let the Moo reach Moo Local through the
 # firewall. Run it again at any time to update.
 param([string]$Moo = "__MOO_URL__")
@@ -22,7 +22,6 @@ $Root = Join-Path $env:USERPROFILE ".moo-local"
 $App = Join-Path $Root "app"
 $Venv = Join-Path $env:USERPROFILE ".moo-local-venv"
 $KVenv = Join-Path $env:USERPROFILE ".moo-kitten2-venv"
-$StoryModel = if ($env:MOO_LOCAL_CHAT_MODEL) { $env:MOO_LOCAL_CHAT_MODEL } else { "gemma3:4b" }
 $UvVersion = "0.13.9"
 # Every library Moo Local needs has a build for 64-bit Intel/AMD Windows; an
 # ARM computer runs that same Python through Windows' own emulation.
@@ -117,30 +116,6 @@ if (-not (Test-Path $KPy)) { & $Uv venv --seed --python $PythonRequest $KVenv }
 if (Test-Path $KPy) { & $Uv pip install --python $KPy -r (Join-Path $App "requirements-kitten2.txt") }
 if ($LASTEXITCODE -ne 0) { Write-Host "Kitten TTS 2 could not be installed; Moo Local works without it." }
 
-# --- Voices -------------------------------------------------------------------------
-Say "Voices"
-$K = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-foreach ($f in "kokoro-v1.0.onnx", "voices-v1.0.bin") {
-    $out = Join-Path $Root "kokoro\$f"
-    if (-not (Test-Path $out)) { try { Download "$K/$f" $out } catch { Write-Host "Kokoro's $f could not be downloaded." } }
-}
-$P = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
-foreach ($v in "amy/medium/en_US-amy-medium", "kristin/medium/en_US-kristin-medium", "ryan/high/en_US-ryan-high") {
-    $n = Split-Path $v -Leaf
-    foreach ($ext in ".onnx", ".onnx.json") {
-        $out = Join-Path $Root "voices\$n$ext"
-        if (-not (Test-Path $out)) { try { Download "$P/$v$ext" $out } catch { Write-Host "Piper voice $n could not be downloaded." } }
-    }
-}
-Push-Location $App
-& $Py moo_local.py --prepare
-Pop-Location
-
-# --- Story model -----------------------------------------------------------------
-Say "Story model $StoryModel (about 3 GB the first time)"
-& $Ollama pull $StoryModel
-if ($LASTEXITCODE -ne 0) { Fail "the story model could not be downloaded." }
-
 # --- The firewall ----------------------------------------------------------------
 # The Moo calls Moo Local on port 8765 and finds it by mDNS (5353). One rule,
 # for this home network only, made with an administrator "Yes".
@@ -180,5 +155,6 @@ if (-not $up) { Fail "Moo Local did not start. See $Log" }
 Write-Host ""
 Write-Host "Moo Local is running on this computer, and starts by itself at every login." -ForegroundColor Green
 Write-Host "On the Moo website, open AI engine: this computer appears under Local machines."
-Write-Host "Choose it there. This window can be closed."
+Write-Host "Choose it there, then pick the story, listening and voice models to download under Models."
+Write-Host "This window can be closed."
 try { Stop-Transcript | Out-Null } catch {}

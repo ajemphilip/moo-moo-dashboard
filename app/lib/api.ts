@@ -374,3 +374,45 @@ export const api = {
   storyStop: () =>
     request<{ status: string }>("/story/stop", { method: "POST", body: "{}" }),
 };
+
+// --- Models of the Moo Local in use (chosen and downloaded from the AI engine screen) ---
+
+export interface LocalModel {
+  id: string;
+  kind: "story" | "listen" | "voice";
+  family: string;
+  label: string;
+  size_mb: number;
+  needs_mb: number;
+  installed: boolean;
+  fits: boolean;
+  too_big: string | null;
+}
+
+export interface LocalModelJob {
+  id: string;
+  label: string;
+  status: "running" | "done" | "error";
+  done_mb: number;
+  total_mb: number;
+  message: string;
+}
+
+export interface LocalModels {
+  computer: string;
+  memory_mb: number;
+  usable_mb: number;
+  disk_free_mb: number;
+  ollama: boolean;
+  models: LocalModel[];
+  job: LocalModelJob | null;
+}
+
+export const localModelsApi = {
+  list: () => request<LocalModels>("/local-ai/models"),
+  job: () => request<{ job: LocalModelJob | null }>("/local-ai/models/job"),
+  install: (id: string) =>
+    request<{ job: LocalModelJob }>("/local-ai/models/install", { method: "POST", body: JSON.stringify({ id }) }),
+  remove: (id: string) =>
+    request<{ removed: string }>("/local-ai/models/remove", { method: "POST", body: JSON.stringify({ id }) }),
+};

@@ -119,6 +119,9 @@ async def chat(request: Request) -> JSONResponse:
     # (gpt-4o-mini) when nothing was chosen; then the default model answers.
     body["model"] = await _model(body.get("model"))
     body.pop("stream", None)
+    if body["model"] not in await _installed():
+        raise MooError(409, "No story model is installed on this computer. Choose one under Models on the AI engine screen.")
+    _refuse_if_too_big(f"story:{_bare(body['model'])}")
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(f"{OLLAMA}/v1/chat/completions", json=body)
     if r.status_code != 200:
@@ -201,6 +204,9 @@ def transcriptions(
         return JSONResponse({"text": ""})
     started = time.time()
     repo = _listen_repo(model)
+    if not _cached(repo):
+        raise MooError(409, "No listening model is installed on this computer. Choose one under Models on the AI engine screen.")
+    _refuse_if_too_big("listen:" + next((k for k, r, _ in LISTEN_MODELS if r == repo), "whisper-turbo"))
     with _whisper_lock:
         text = _transcribe(audio, repo, language)
     log.info("heard in %.1fs with %s: %r", time.time() - started, repo.split("/")[-1], text)
@@ -368,6 +374,8 @@ async def speech(request: Request) -> Response:
             _free_chatterbox()
         orpheus_audio = None
         mlx_ok = {"orpheus": _orpheus_ready, "qwen3": _qwen3_ready}
+        if engine in ("orpheus", "kitten2") or (engine == "qwen3" and _qwen3_ready()):
+            _refuse_if_too_big(f"voice:{engine}" + (f":{_quality_id('qwen3', quality)}" if engine == "qwen3" else ""))
         if (engine == "kitten2" and _kitten2_ready()) or (engine == "kitten2s" and _kitten2s_ready()):
             try:
                 repo = "KittenML/kitten-tts-2" if engine == "kitten2" else _quality("kitten2s", quality)
@@ -423,10 +431,15 @@ async def speech(request: Request) -> Response:
                 wf.setsampwidth(2)
                 wf.setframerate(rate)
                 wf.writeframes(pcm.tobytes())
-        else:
+        elif VOICE_PATH.exists() and VOICE_PATH.with_suffix(".onnx.json").exists():
             voice = _get_voice()
             with wave.open(buf, "wb") as wf:
                 voice.synthesize_wav(text, wf)
+        elif _piper_voices():
+            with wave.open(buf, "wb") as wf:
+                _get_piper(next(iter(_piper_voices()))).synthesize_wav(text, wf)
+        else:
+            raise MooError(409, "No voice is installed on this computer. Choose one under Models on the AI engine screen.")
     log.info("spoke %d characters with %s%s in %.1fs", len(text), engine or "kokoro",
              f" ({quality})" if quality else "", time.time() - started)
     return Response(content=buf.getvalue(), media_type="audio/wav")
@@ -483,6 +496,10 @@ def _chatterbox_ready() -> bool:
 
 
 def _orpheus_ready() -> bool:
+    return _mlx_audio() and _cached(ORPHEUS_MODEL)
+
+
+def _mlx_audio() -> bool:
     return APPLE and _importable("mlx_audio.tts.utils")
 
 
@@ -548,7 +565,7 @@ def _kitten2_ready() -> bool:
 
 
 def _kitten2s_ready() -> bool:
-    return KITTEN2_PYTHON.exists() and _cached("KittenML/kitten-tts-2-nano")
+    return KITTEN2_PYTHON.exists() and any(_cached(q[2]) for q in VOICE_QUALITIES["kitten2s"])
 
 
 def _kitten2_say(text: str, voice: str, repo: str) -> tuple[int, np.ndarray]:
@@ -623,6 +640,12 @@ def _qualities(engine: str) -> list[tuple]:
     return [q for q in VOICE_QUALITIES.get(engine, []) if not isinstance(q[2], str) or _cached(q[2])]
 
 
+def _quality_id(engine: str, wanted: str | None) -> str:
+    """The id of the quality `_quality` picks."""
+    have = [q[0] for q in _qualities(engine)]
+    return next((q for q in (wanted, _DEFAULT_QUALITY.get(engine)) if q in have), have[0] if have else "")
+
+
 def _quality(engine: str, wanted: str | None):
     """The setting behind a quality id: a model for Kitten and Qwen3, a
     number of steps for Supertonic. Falls back to the default."""
@@ -631,7 +654,7 @@ def _quality(engine: str, wanted: str | None):
 
 
 def _qwen3_ready() -> bool:
-    return _orpheus_ready() and _cached("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
+    return _mlx_audio() and any(_cached(q[2]) for q in VOICE_QUALITIES["qwen3"])
 
 
 def _orpheus_say(text: str, voice: str, engine: str = "orpheus", repo: str | None = None) -> tuple[int, np.ndarray]:
@@ -734,8 +757,11 @@ _pocket = None
 _pocket_states: dict[str, object] = {}
 
 
+POCKET_REPO = "kyutai/pocket-tts"
+
+
 def _pocket_ready() -> bool:
-    return _importable("pocket_tts")
+    return _cached(POCKET_REPO) and _importable("pocket_tts")
 
 
 def _pocket_say(text: str, voice: str) -> tuple[int, np.ndarray]:
@@ -756,8 +782,11 @@ _supertonic = None
 _supertonic_styles: dict[str, object] = {}
 
 
+SUPERTONIC_DIR = Path.home() / ".cache" / "supertonic3"
+
+
 def _supertonic_ready() -> bool:
-    return _importable("supertonic")
+    return SUPERTONIC_DIR.is_dir() and any(SUPERTONIC_DIR.iterdir()) and _importable("supertonic")
 
 
 def _supertonic_say(text: str, voice: str, steps: int = 8) -> tuple[int, np.ndarray]:
@@ -901,6 +930,362 @@ async def options() -> dict:
         "orpheus_voices": voices_by_engine.get("orpheus", []),
     }
 
+
+
+# --- models: what can be installed here, and installing it --------------------
+#
+# Nothing is downloaded until the parent chooses it on the AI engine screen.
+# Each model has an id, its download size and the memory it needs while it
+# runs; one that does not fit this computer is refused with a clear error
+# that names a smaller one of the same kind.
+
+class MooError(Exception):
+    def __init__(self, status: int, message: str):
+        self.status, self.message = status, message
+
+
+@app.exception_handler(MooError)
+async def _moo_error(_request: Request, exc: MooError) -> JSONResponse:
+    # "detail" for the Moo's setup app, "error" in OpenAI's shape for the storyteller.
+    return JSONResponse(status_code=exc.status, content={
+        "detail": exc.message, "error": {"message": exc.message, "type": "moo_local"}})
+
+
+# Download size of each story model in MB (Ollama's default quantization).
+_STORY_MB = {
+    "qwen2.5:0.5b": 400, "llama3.2:1b": 1300, "gemma3:1b": 815, "qwen2.5:1.5b": 990,
+    "phi4-mini": 2500, "qwen2.5:3b": 1900, "mistral-nemo": 7100, "llama3.2:3b": 2000,
+    "llama3.1:8b": 4900, "gemma3:12b": 8100, "qwen2.5:7b": 4700, "gemma3:4b": 3300,
+}
+_LISTEN_MB = {"whisper-tiny": 75, "whisper-base": 145, "whisper-small": 485, "whisper-turbo": 1600}
+_PIPER_MB = {"low": 25, "medium": 63, "high": 115}
+
+
+def _bare(name: str) -> str:
+    return name[: -len(":latest")] if name.endswith(":latest") else name
+
+
+def _memory_mb() -> int:
+    """This computer's memory. MOO_LOCAL_RAM_MB pretends another size (for tests)."""
+    if os.environ.get("MOO_LOCAL_RAM_MB"):
+        return int(os.environ["MOO_LOCAL_RAM_MB"])
+    try:
+        if WINDOWS:
+            import ctypes
+
+            class Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = Status()
+            st.dwLength = ctypes.sizeof(Status)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+            return int(st.ullTotalPhys // 2**20)
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 2**20)
+    except Exception:
+        return 8192
+
+
+def _usable_mb() -> int:
+    """What one model may use: the system, the browser and the other models
+    need the rest."""
+    return int(_memory_mb() * 0.7)
+
+
+def _disk_free_mb() -> int:
+    try:
+        import shutil
+
+        return int(shutil.disk_usage(Path.home()).free // 2**20)
+    except Exception:
+        return 0
+
+
+def _needs_mb(size_mb: int, story: bool = False) -> int:
+    # A story model also holds its context; the others little more than their weights.
+    return int(size_mb * 1.25 + 500) if story else int(size_mb * 1.3 + 200)
+
+
+def _catalogue() -> list[dict]:
+    """Every model this computer could run, smallest first within its kind."""
+    items: list[dict] = []
+    for name, label in sorted(_STORY_ORDER, key=lambda x: _STORY_MB.get(x[0], 0)):
+        mb = _STORY_MB.get(name, 0)
+        items.append({"id": f"story:{name}", "kind": "story", "family": "story", "label": label,
+                      "size_mb": mb, "needs_mb": _needs_mb(mb, True)})
+    for key, repo, label in LISTEN_MODELS:
+        mb = _LISTEN_MB.get(key, 0)
+        items.append({"id": f"listen:{key}", "kind": "listen", "family": "listen", "label": label,
+                      "size_mb": mb, "needs_mb": _needs_mb(mb), "repo": repo})
+
+    def voice(vid: str, family: str, label: str, mb: int, **kw) -> None:
+        items.append({"id": f"voice:{vid}", "kind": "voice", "family": family, "label": label,
+                      "size_mb": mb, "needs_mb": _needs_mb(mb), **kw})
+
+    if KITTEN2_PYTHON.exists():
+        for (q, qlabel, repo), mb in zip(VOICE_QUALITIES["kitten2s"], (25, 60, 330)):
+            voice(f"kitten2s:{q}", "kitten2s", f"Kitten 2 small, {qlabel}", mb, repo=repo)
+    voice("kokoro", "kokoro", "Kokoro — natural, quick, ten voices", 340)
+    if _importable("supertonic"):
+        voice("supertonic", "supertonic", "Supertonic — natural, quick, ten voices", 260)
+    if _importable("pocket_tts"):
+        voice("pocket", "pocket", "Pocket — natural and very fast, eight voices", 450, repo=POCKET_REPO)
+    if _importable("piper"):
+        for vid, label in _PIPER_LABELS.items():
+            voice(f"piper:{vid}", "piper", f"Piper, {label}", _PIPER_MB.get(vid.rsplit("-", 1)[-1], 63))
+    if APPLE and KITTEN2_PYTHON.exists():
+        voice("kitten2", "kitten2", "Kitten 2 — story voices, 1.7B", 3500, repo="KittenML/kitten-tts-2")
+    if _mlx_audio():
+        for (q, qlabel, repo), mb in zip(VOICE_QUALITIES["qwen3"], (1000, 2300)):
+            voice(f"qwen3:{q}", "qwen3", f"Qwen3, {qlabel}", mb, repo=repo)
+        voice("orpheus", "orpheus", "Orpheus — acted, giggles and gasps, slow", 2300, repo=ORPHEUS_MODEL)
+    return items
+
+
+def _item(model_id: str) -> dict:
+    for it in _catalogue():
+        if it["id"] == model_id:
+            return it
+    raise MooError(404, f"{model_id} is not a model this computer can use")
+
+
+def _too_big(it: dict) -> str | None:
+    """Why a model does not fit this computer, with a smaller one to use instead."""
+    if it["needs_mb"] <= _usable_mb():
+        return None
+    gb = round(_memory_mb() / 1024)
+    smaller = [o for o in _catalogue() if o["family"] == it["family"] and o["needs_mb"] <= _usable_mb()
+               and o["size_mb"] < it["size_mb"]]
+    if it["kind"] == "story":  # the best scorer that fits, not only the largest
+        order = [f"story:{n}" for n, _ in _STORY_ORDER]
+        smaller.sort(key=lambda o: order.index(o["id"]) if o["id"] in order else -1)
+    hint = f" Try {smaller[-1]['label'].split(' — ')[0]} instead." if smaller else " Choose a smaller model."
+    return (f"{it['label'].split(' — ')[0]} is too big for this computer: it needs about "
+            f"{it['needs_mb'] / 1024:.1f} GB of memory and this computer has {gb} GB.{hint}")
+
+
+def _refuse_if_too_big(model_id: str) -> None:
+    try:
+        it = _item(model_id)
+    except MooError:
+        return  # a model of the maker's own, outside the catalogue
+    reason = _too_big(it)
+    if reason:
+        raise MooError(507, reason)
+
+
+def _installed_ids(story_names: list[str]) -> set[str]:
+    have = {f"story:{_bare(n)}" for n in story_names}
+    for it in _catalogue():
+        if it["kind"] == "story":
+            continue
+        family, vid = it["family"], it["id"].split(":", 2)[-1]
+        if it.get("repo") and family not in ("pocket",):
+            ok = _cached(it["repo"])
+        elif family == "pocket":
+            ok = _cached(POCKET_REPO)
+        elif family == "kokoro":
+            ok = _kokoro_ready()
+        elif family == "supertonic":
+            ok = SUPERTONIC_DIR.is_dir() and any(SUPERTONIC_DIR.iterdir())
+        elif family == "piper":
+            ok = vid in _piper_voices()
+        else:
+            ok = False
+        if ok:
+            have.add(it["id"])
+    return have
+
+
+_job: dict = {}  # the one download running or last finished
+_job_lock = threading.Lock()
+
+
+def _folder_mb(path: Path) -> int:
+    try:
+        return int(sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) // 2**20)
+    except Exception:
+        return 0
+
+
+def _download(url: str, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    part = out.with_name(out.name + ".part")
+    with httpx.stream("GET", url, follow_redirects=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(part, "wb") as f:
+            for chunk in r.iter_bytes(1 << 20):
+                f.write(chunk)
+                _job["done_mb"] = _job.get("base_mb", 0) + f.tell() // 2**20
+    part.replace(out)
+
+
+def _piper_url(vid: str) -> str:
+    lang, speaker, q = vid.split("-", 2)
+    return f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang.split('_')[0]}/{lang}/{speaker}/{q}/{vid}"
+
+
+def _install(it: dict) -> None:
+    family, vid = it["family"], it["id"].split(":", 1)[1]
+    watch: Path | None = None
+    if it.get("repo"):
+        watch = _hub_cache() / ("models--" + it["repo"].replace("/", "--"))
+    elif family == "supertonic":
+        watch = SUPERTONIC_DIR
+    stop = threading.Event()
+
+    def progress() -> None:  # Hugging Face and the voice libraries report nothing; watch the folder grow
+        while watch and not stop.wait(1):
+            _job["done_mb"] = min(_folder_mb(watch), it["size_mb"])
+
+    threading.Thread(target=progress, daemon=True).start()
+    try:
+        if it["kind"] == "story":
+            with httpx.stream("POST", f"{OLLAMA}/api/pull", json={"model": vid, "stream": True}, timeout=None) as r:
+                layers: dict[str, tuple[int, int]] = {}
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    msg = json.loads(line)
+                    if msg.get("error"):
+                        raise RuntimeError(msg["error"])
+                    if msg.get("digest") and msg.get("total"):
+                        layers[msg["digest"]] = (msg.get("completed") or 0, msg["total"])
+                        _job["done_mb"] = sum(c for c, _ in layers.values()) // 2**20
+                        _job["total_mb"] = max(it["size_mb"], sum(t for _, t in layers.values()) // 2**20)
+        elif family == "kokoro":
+            base = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+            _download(f"{base}/voices-v1.0.bin", KOKORO_DIR / "voices-v1.0.bin")
+            _job["base_mb"] = _job["done_mb"]
+            _download(f"{base}/kokoro-v1.0.onnx", KOKORO_DIR / "kokoro-v1.0.onnx")
+        elif family == "piper":
+            folder = VOICE_PATH.parent
+            _download(_piper_url(vid) + ".onnx.json", folder / f"{vid}.onnx.json.tmp")
+            _download(_piper_url(vid) + ".onnx", folder / f"{vid}.onnx")
+            (folder / f"{vid}.onnx.json.tmp").replace(folder / f"{vid}.onnx.json")
+        elif family == "pocket":
+            with _voice_lock:  # loading it downloads the model, each voice its own small file
+                for v, _ in POCKET_VOICES:
+                    _pocket_say("Hello.", v)
+        elif family == "supertonic":
+            with _voice_lock:
+                for v, _ in SUPERTONIC_VOICES:
+                    _supertonic_say("Hello.", v, 3)
+        else:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(it["repo"])
+        _ready_cache.clear()
+        _job.update(status="done", done_mb=_job.get("total_mb", it["size_mb"]), message=f"{it['label'].split(' — ')[0]} is installed.")
+        log.info("installed %s", it["id"])
+    except Exception as exc:
+        log.warning("installing %s failed", it["id"], exc_info=True)
+        _job.update(status="error", message=f"{it['label'].split(' — ')[0]} could not be installed: {exc}")
+    finally:
+        stop.set()
+
+
+def _remove(it: dict) -> None:
+    import shutil
+
+    global _kokoro, _pocket, _supertonic, _kitten2
+    family, vid = it["family"], it["id"].split(":", 1)[1]
+    if it["kind"] == "story":
+        r = httpx.request("DELETE", f"{OLLAMA}/api/delete", json={"model": vid}, timeout=30)
+        if r.status_code == 404:
+            httpx.request("DELETE", f"{OLLAMA}/api/delete", json={"model": f"{vid}:latest"}, timeout=30)
+        return
+    with _voice_lock:
+        if family == "kokoro":
+            _kokoro = None
+            for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+                (KOKORO_DIR / f).unlink(missing_ok=True)
+        elif family == "piper":
+            _piper.pop(vid, None)
+            for ext in (".onnx", ".onnx.json"):
+                (VOICE_PATH.parent / f"{vid}{ext}").unlink(missing_ok=True)
+        elif family == "supertonic":
+            _supertonic = None
+            _supertonic_styles.clear()
+            shutil.rmtree(SUPERTONIC_DIR, ignore_errors=True)
+        else:
+            if family == "pocket":
+                _pocket = None
+                _pocket_states.clear()
+            if family in ("kitten2s", "kitten2") and _kitten2 is not None:
+                _kitten2.kill()
+                _kitten2 = None
+            if family in ("qwen3", "orpheus") and _orpheus is not None:
+                _orpheus.kill()
+            _fw.clear()
+            shutil.rmtree(_hub_cache() / ("models--" + it["repo"].replace("/", "--")), ignore_errors=True)
+    _ready_cache.clear()
+
+
+@app.get("/moo/models")
+async def models() -> dict:
+    """The catalogue for the Moo's AI engine screen: each model with its size,
+    the memory it needs, whether it is installed, and whether it fits."""
+    installed = _installed_ids(await _installed())
+    items = []
+    for it in _catalogue():
+        reason = _too_big(it)
+        items.append({k: v for k, v in it.items() if k != "repo"} | {
+            "installed": it["id"] in installed, "fits": reason is None, "too_big": reason})
+    return {
+        "computer": socket.gethostname(),
+        "memory_mb": _memory_mb(),
+        "usable_mb": _usable_mb(),
+        "disk_free_mb": _disk_free_mb(),
+        "ollama": bool(await _installed()) or _ollama_up(),
+        "models": items,
+        "job": dict(_job) or None,
+    }
+
+
+@app.get("/moo/models/job")
+def models_job() -> dict:
+    return {"job": dict(_job) or None}
+
+
+@app.post("/moo/models/install")
+async def models_install(request: Request) -> dict:
+    model_id = str((await request.json()).get("id") or "")
+    it = _item(model_id)
+    reason = _too_big(it)
+    if reason:
+        raise MooError(507, reason)
+    if _disk_free_mb() < it["size_mb"] + 1024:
+        raise MooError(507, f"Not enough free space: {it['label'].split(' — ')[0]} needs about "
+                            f"{(it['size_mb'] + 1024) / 1024:.1f} GB and this computer has "
+                            f"{_disk_free_mb() / 1024:.1f} GB free.")
+    if it["kind"] == "story" and not _ollama_up():
+        raise MooError(503, "Ollama is not running on this computer, so story models cannot be installed.")
+    with _job_lock:
+        if _job.get("status") == "running":
+            raise MooError(409, f"Wait until {_job.get('label')} has finished installing.")
+        _job.clear()
+        _job.update(id=it["id"], label=it["label"].split(" — ")[0], status="running",
+                    done_mb=0, total_mb=it["size_mb"], message="")
+    threading.Thread(target=_install, args=(it,), daemon=True).start()
+    return {"job": dict(_job)}
+
+
+@app.post("/moo/models/remove")
+async def models_remove(request: Request) -> dict:
+    model_id = str((await request.json()).get("id") or "")
+    it = _item(model_id)
+    if _job.get("status") == "running" and _job.get("id") == model_id:
+        raise MooError(409, "It is still installing.")
+    _remove(it)
+    global _chat_model
+    if it["kind"] == "story" and _chat_model and _bare(_chat_model) == model_id.split(":", 1)[1]:
+        _chat_model = None
+    log.info("removed %s", model_id)
+    return {"removed": model_id}
 
 # --- status ------------------------------------------------------------------
 

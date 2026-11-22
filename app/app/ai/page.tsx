@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/Button";
+import { MooLocalModels } from "@/components/MooLocalModels";
 import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
 import { deviceName } from "@/components/ThisDevice";
@@ -518,6 +519,7 @@ function AiPageInner() {
               </p>
             </>
           )}
+          {options.mode === "local" && <MooLocalModels onChanged={refreshOptions} />}
           {options.mode === "local" && options.tiers && options.tiers.length > 0 && (
             <Select
               label="Speed and quality"

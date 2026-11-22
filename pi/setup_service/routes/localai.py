@@ -6,6 +6,10 @@ GET /local-ai/download/linux     Install Moo Local.sh
 GET /local-ai/install.sh         the macOS and Linux installer, for the Terminal line
 GET /local-ai/install.ps1        the Windows installer, which the .cmd fetches
 GET /local-ai/files/{name}       the files the installers fetch
+GET /local-ai/models             the chosen Moo Local's models: size, memory, installed, fits
+POST /local-ai/models/install    {"id"}: download one (Moo Local refuses one too big)
+POST /local-ai/models/remove     {"id"}: delete one
+GET /local-ai/models/job         progress of the download
 
 The website's Set up a local machine page offers the download for the
 visitor's computer; a parent double-clicks it and the computer then appears
@@ -19,6 +23,9 @@ from __future__ import annotations
 
 import io
 import ipaddress
+import json
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -105,3 +112,58 @@ def install_file(name: str) -> FileResponse:
     if name not in _FILES or not (_DIR / name).exists():
         raise HTTPException(status_code=404, detail="No such file")
     return FileResponse(_DIR / name, media_type="text/plain")
+
+
+# --- the models of the Moo Local in use ----------------------------------------
+
+def _local_base() -> str:
+    import config as moo_config
+    from assistant.ai_client import local_url
+
+    url = (local_url(moo_config.load_config()) or "").rstrip("/")
+    if not url:
+        raise HTTPException(status_code=409, detail="No local machine is chosen.")
+    return url[: -len("/v1")] if url.endswith("/v1") else url
+
+
+def _relay(path: str, body: dict | None = None, timeout: float = 10) -> dict:
+    """One request to Moo Local; its own error message is passed on."""
+    req = urllib.request.Request(
+        _local_base() + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"},
+        method="POST" if body is not None else "GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("detail")
+        except Exception:
+            detail = None
+        if e.code == 404 and not detail:
+            detail = "This Moo Local is too old to choose models. Run its installer again to update it."
+        raise HTTPException(status_code=e.code, detail=detail or f"Moo Local answered {e.code}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="The local machine did not answer.")
+
+
+@router.get("/models")
+def models() -> dict:
+    return _relay("/moo/models")
+
+
+@router.get("/models/job")
+def models_job() -> dict:
+    return _relay("/moo/models/job")
+
+
+@router.post("/models/install")
+def models_install(body: dict) -> dict:
+    return _relay("/moo/models/install", {"id": str(body.get("id") or "")})
+
+
+@router.post("/models/remove")
+def models_remove(body: dict) -> dict:
+    return _relay("/moo/models/remove", {"id": str(body.get("id") or "")}, timeout=60)
