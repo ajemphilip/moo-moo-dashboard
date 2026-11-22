@@ -389,6 +389,7 @@ export interface LocalModel {
   installed: boolean;
   fits: boolean;
   too_big: string | null;
+  builtin?: boolean; // part of the computer (the Mac's own voices): nothing to download or remove
 }
 
 export interface LocalModelJob {

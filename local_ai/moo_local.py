@@ -467,7 +467,7 @@ KOKORO_VOICES = [
 
 
 
-_ENGINE_ORDER = ["kitten2s", "kokoro", "pocket", "supertonic", "piper", "qwen3", "kitten2", "orpheus"]
+_ENGINE_ORDER = ["kitten2s", "kokoro", "pocket", "supertonic", "piper", "qwen3", "kitten2", "orpheus", "mac"]
 
 
 def _engine_ready(engine: str) -> bool:
@@ -475,6 +475,7 @@ def _engine_ready(engine: str) -> bool:
         "kitten2s": _kitten2s_ready, "kokoro": _kokoro_ready, "pocket": _pocket_ready,
         "supertonic": _supertonic_ready, "piper": lambda: bool(_piper_voices()),
         "qwen3": _qwen3_ready, "kitten2": _kitten2_ready, "orpheus": _orpheus_ready,
+        "mac": lambda: APPLE,
     }.get(engine, _kokoro_ready)()
 
 
@@ -1038,8 +1039,10 @@ def _catalogue() -> list[dict]:
 
     def voice(vid: str, family: str, label: str, mb: int, **kw) -> None:
         items.append({"id": f"voice:{vid}", "kind": "voice", "family": family, "label": label,
-                      "size_mb": mb, "needs_mb": _needs_mb(mb), **kw})
+                      "size_mb": mb, "needs_mb": _needs_mb(mb) if mb else 0, **kw})
 
+    if APPLE:  # built into macOS: nothing to download, always there
+        voice("mac", "mac", "Mac voices — instant, plain, built in", 0, builtin=True)
     if KITTEN2_PYTHON.exists():
         for (q, qlabel, repo), mb in zip(VOICE_QUALITIES["kitten2s"], (25, 60, 330)):
             voice(f"kitten2s:{q}", "kitten2s", f"Kitten 2 small, {qlabel}", mb, repo=repo)
@@ -1096,6 +1099,9 @@ def _installed_ids(story_names: list[str]) -> set[str]:
     have = {f"story:{_bare(n)}" for n in story_names}
     for it in _catalogue():
         if it["kind"] == "story":
+            continue
+        if it.get("builtin"):
+            have.add(it["id"])
             continue
         family, vid = it["family"], it["id"].split(":", 2)[-1]
         if it.get("repo") and family not in ("pocket",):
@@ -1256,6 +1262,8 @@ def _remove(it: dict) -> None:
 
     global _kokoro, _pocket, _supertonic, _kitten2
     family, vid = it["family"], it["id"].split(":", 1)[1]
+    if it.get("builtin"):
+        return  # part of the computer, nothing to delete
     if it["kind"] == "story":
         r = httpx.request("DELETE", f"{OLLAMA}/api/delete", json={"model": vid}, timeout=30)
         if r.status_code == 404:

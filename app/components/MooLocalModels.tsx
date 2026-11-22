@@ -1,10 +1,11 @@
 "use client";
 
-// The models of the Moo Local in use, one dropdown for each kind. Nothing is
-// downloaded until the parent picks a model. Picking another one installs
-// it, checks that it runs, and then removes the one it replaces, so each
-// kind keeps one model on the computer. A model too big for the computer is
-// shown but cannot be picked.
+// The models of the Moo Local in use, one dropdown for each kind, and the
+// one selected is the one the Moo uses. Nothing is downloaded until the
+// parent picks a model. Picking one that is not on the computer installs it,
+// checks that it runs, removes the one it replaces (so each kind keeps one
+// model on the computer) and then uses it. A model too big for the computer
+// is shown but cannot be picked. The Mac's own voices are always there.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AiSettings, localModelsApi, LocalModel, LocalModelJob, LocalModels, PiApiError } from "@/lib/api";
@@ -24,7 +25,7 @@ function short(label: string): string {
 }
 
 // The Moo's settings that make it use a model once it is installed.
-function settingsFor(id: string): Partial<AiSettings> {
+function settingsFor(id: string, current?: AiSettings | null): Partial<AiSettings> {
   const kind = id.split(":")[0];
   const rest = id.slice(id.indexOf(":") + 1);
   if (kind === "story") return { tier: "custom", story_model: rest };
@@ -32,7 +33,11 @@ function settingsFor(id: string): Partial<AiSettings> {
   const engine = rest.split(":")[0];
   const sub = rest.split(":").slice(1).join(":");
   if (engine === "piper") return { tier: "custom", voice_engine: "piper", voice: sub };
-  if (sub) return { tier: "custom", voice_engine: engine, voice: null, voice_qualities: { [engine]: sub } };
+  if (sub)
+    return {
+      tier: "custom", voice_engine: engine, voice: null,
+      voice_qualities: { ...(current?.voice_qualities ?? {}), [engine]: sub },
+    };
   return { tier: "custom", voice_engine: engine, voice: null };
 }
 
@@ -60,6 +65,8 @@ export function MooLocalModels({
   const [data, setData] = useState<LocalModels | null>(null);
   const [job, setJob] = useState<LocalModelJob | null>(null);
   const [error, setError] = useState<{ kind: string; text: string } | null>(null);
+  const current = useRef(settings);
+  current.current = settings;
   const changed = useRef(onChanged);
   changed.current = onChanged;
   const chosen = useRef(onChosen);
@@ -88,7 +95,8 @@ export function MooLocalModels({
           setJob(j);
           if (j && j.status !== "running") {
             load();
-            if (j.status === "done") Promise.resolve(chosen.current?.(settingsFor(j.id))).finally(() => changed.current?.());
+            if (j.status === "done")
+              Promise.resolve(chosen.current?.(settingsFor(j.id, current.current))).finally(() => changed.current?.());
             else changed.current?.();
           }
         })
@@ -101,11 +109,12 @@ export function MooLocalModels({
     setError(null);
     if (installed.some((m) => m.id === id)) {
       // Already on this computer: only switch the Moo to it.
-      await chosen.current?.(settingsFor(id));
+      await chosen.current?.(settingsFor(id, current.current));
       return;
     }
     try {
-      setJob((await localModelsApi.install(id, installed.map((m) => m.id))).job);
+      const replace = installed.filter((m) => !m.builtin).map((m) => m.id);
+      setJob((await localModelsApi.install(id, replace)).job);
     } catch (e) {
       setError({ kind, text: e instanceof PiApiError ? e.message : "It could not be installed." });
     }
@@ -120,8 +129,9 @@ export function MooLocalModels({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-moo-ink/70">
-        Models on {data.computer}: {size(data.memory_mb)} of memory, {size(data.disk_free_mb)} free. Picking a model
-        downloads it and removes the one it replaces. Nothing downloads until you pick.
+        {data.computer}: {size(data.memory_mb)} of memory, {size(data.disk_free_mb)} free. The model selected is the one
+        in use. Picking one that is not on this computer downloads it and removes the one it replaces. Nothing
+        downloads until you pick.
       </p>
       {KINDS.map(({ kind, title, none }) => {
         const list = data.models.filter((m) => m.kind === kind);
@@ -143,14 +153,16 @@ export function MooLocalModels({
               {installed.length === 0 && <option value="">{none}</option>}
               {list.map((m) => (
                 <option key={m.id} value={m.id} disabled={!m.fits && !m.installed}>
-                  {m.label} · {size(m.size_mb)}, needs {size(m.needs_mb)}
+                  {m.label}
+                  {m.builtin ? "" : ` · ${size(m.size_mb)}, needs ${size(m.needs_mb)}`}
                   {!m.fits ? " · too big" : ""}
                 </option>
               ))}
             </select>
-            {installed.length > 1 && (
+            {installed.filter((m) => !m.builtin && m.id !== value).length > 0 && (
               <span className="text-xs text-moo-ink/60">
-                Also on this computer: {installed.slice(1).map((m) => short(m.label)).join(", ")}
+                Also on this computer:{" "}
+                {installed.filter((m) => !m.builtin && m.id !== value).map((m) => short(m.label)).join(", ")}
               </span>
             )}
             {mine && mine.status === "running" && (

@@ -570,9 +570,10 @@ function AiPageInner() {
               onChange={(v) => save({ cloud_story_model: v })}
             />
           )}
-          {options.voice_engines && options.voice_engines.length > 1 && (
+          {/* A local machine's voice model is chosen, and put in use, in the Models dropdowns above. */}
+          {options.mode !== "local" && options.voice_engines && options.voice_engines.length > 1 && (
             <Select
-              label={options.mode === "local" ? "Voice in use" : "Voice model"}
+              label="Voice model"
               value={
                 (options.mode === "cloud" ? settings?.cloud_voice_model : settings?.voice_engine) ??
                 options.voice_engines[0].id
@@ -590,7 +591,7 @@ function AiPageInner() {
               }}
             />
           )}
-          {options.mode === "local" && options.voice_qualities && (() => {
+          {options.mode !== "local" && options.voice_qualities && (() => {
             const eng = settings?.voice_engine ?? "kokoro";
             const qs = options.voice_qualities[eng];
             if (!qs || qs.length < 2) return null;
