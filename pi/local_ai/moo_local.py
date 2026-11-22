@@ -248,9 +248,12 @@ def _listen_repo(model_id: str) -> str:
     """The Whisper model behind the id the Moo sends. An id it does not know
     ("whisper-1" from older screens) gets the largest one downloaded here."""
     repos = {k: r for k, r, _ in LISTEN_MODELS}
-    if model_id in repos:
-        return repos[model_id]
     cached = [r for _, r, _ in LISTEN_MODELS if _cached(r)]
+    # A model the Moo still names after it was replaced in the dropdown gets the
+    # one that replaced it: on JANUSZ the Moo asked for Small after Large turbo
+    # took its place and heard "No listening model is installed" (22 November 2026).
+    if model_id in repos and (_cached(repos[model_id]) or not cached):
+        return repos[model_id]
     return WHISPER_MODEL if WHISPER_MODEL in cached or not cached else cached[-1]
 
 
