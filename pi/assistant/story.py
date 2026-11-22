@@ -70,25 +70,23 @@ def _system_prompt(age_range: str | None, strict: bool = False) -> str:
     return base
 
 
-def generate_intro(client, age_range: str | None) -> str:
-    resp = client.chat.completions.create(
-        model=CHAT_MODEL,
-        messages=[
-            {"role": "system", "content": _system_prompt(age_range)},
-            {
-                "role": "user",
-                "content": (
-                    "Greet the child warmly, then clearly and explicitly ask "
-                    "them to SAY OUT LOUD what kind of story they would like — "
-                    "a theme, a character, or an idea. Make it obvious they "
-                    "should speak their idea aloud after you finish. Two or "
-                    "three short sentences, fresh wording every time."
-                ),
-            },
-        ],
-        max_tokens=120,
-    )
-    return resp.choices[0].message.content.strip()
+# The greeting is fixed text, picked at random. Written by the story model it
+# asked the story question twice (asked to make it "clear", "explicit" and
+# "obvious"), and on a small Windows laptop Qwen 2.5 3B took 108 s to write it
+# before Moo said a word (22 November 2026).
+_INTROS = (
+    "Hello, my friend! It's Moo. Let's make a story together. What should our story be about?",
+    "Moo moo! I'm so happy you're here. Tell me, what should our story be about?",
+    "Hi there, it's Moo! I love making stories with you. What should our story be about today?",
+    "Hello! Moo is ready for a story. What should it be about? A dragon, a castle, or anything you like!",
+)
+
+
+def generate_intro(client=None, age_range: str | None = None) -> str:
+    """Moo's greeting and the one question about the story's theme."""
+    import random
+
+    return random.choice(_INTROS)
 
 
 # Short spoken lines — generated fresh each time so greetings, cheers and

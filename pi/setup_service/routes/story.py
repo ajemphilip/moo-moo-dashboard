@@ -110,7 +110,9 @@ def _listen(question: str) -> str:
     if _stop.is_set() or not _no_idea(answer):
         return answer
 
-    again = "Tell me what the story should be about. A dragon, a castle, or anything you like!"
+    # Said only when no idea was heard, and it says so, so it does not sound
+    # like the same question asked twice.
+    again = "I didn't hear an idea. Say it loud and clear: a dragon, a castle, or anything you like!"
     _set(phase="quiz", message=again)
     _audio.speak(again)
     if _stop.is_set():
