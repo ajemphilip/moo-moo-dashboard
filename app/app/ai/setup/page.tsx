@@ -2,12 +2,72 @@
 
 // Adding a local machine: a computer at home that does Moo's AI work.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/Button";
 import { StepLayout } from "@/components/StepLayout";
 import { api, PiApiError } from "@/lib/api";
 import { stopThisDevice } from "@/lib/lendEngine";
+import { readCachedBase } from "@/lib/pi";
+
+type System = "windows" | "mac" | "linux";
+
+const SYSTEMS: { id: System; label: string; file: string }[] = [
+  { id: "windows", label: "Windows", file: "Install Moo Local.cmd" },
+  { id: "mac", label: "Mac", file: "Install Moo Local.command" },
+  { id: "linux", label: "Linux", file: "Install Moo Local.sh" },
+];
+
+// What the visitor's computer is; a phone or tablet gets null.
+function detectSystem(): System | null {
+  if (typeof navigator === "undefined") return null;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string; mobile?: boolean } };
+  const ua = navigator.userAgent;
+  if (nav.userAgentData?.mobile || /Android|iPhone|iPad|iPod/i.test(ua)) return null;
+  // An iPad asking for the desktop site says "Macintosh" but has a touch screen.
+  if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return null;
+  const p = (nav.userAgentData?.platform || navigator.platform || ua).toLowerCase();
+  if (p.includes("win")) return "windows";
+  if (p.includes("mac")) return "mac";
+  if (p.includes("linux") || p.includes("x11") || p.includes("cros")) return "linux";
+  return null;
+}
+
+// Where the Moo is. Served by the Moo itself the links stay on this page's
+// own address (so an https page downloads over https).
+function mooBase(): { links: string; http: string } {
+  if (typeof window === "undefined") return { links: "", http: "http://moo.local:8000" };
+  const fromMoo = process.env.NEXT_PUBLIC_GITHUB_PAGES !== "true" && !window.location.origin.includes(":3000");
+  const base = fromMoo ? window.location.origin : readCachedBase() || "http://moo.local:8000";
+  const host = base.replace(/^https?:\/\//, "").replace(/:\d+.*$/, "").replace(/\/.*$/, "");
+  return { links: fromMoo ? "" : base, http: `http://${host}:8000` };
+}
+
+function HowToOpen({ system }: { system: System }) {
+  if (system === "mac")
+    return (
+      <p className="text-xs text-moo-ink/70">
+        Open <b>Install Moo Local</b> from Downloads. Safari unzips it by itself; in another browser, double-click the
+        zip first. The file is not signed, so the Mac asks once: if it says it cannot check the file, open System
+        Settings → Privacy &amp; Security and choose <b>Open Anyway</b> (on older macOS, right-click the file and choose
+        Open). A Terminal window shows the progress; nothing has to be typed.
+      </p>
+    );
+  if (system === "windows")
+    return (
+      <p className="text-xs text-moo-ink/70">
+        Open <b>Install Moo Local.cmd</b> from Downloads. If the browser warns about the file, choose Keep. The file is
+        not signed, so Windows SmartScreen asks once: choose <b>More info</b> → <b>Run anyway</b>. Near the end Windows
+        asks for a Yes, so the Moo can reach this computer through the firewall.
+      </p>
+    );
+  return (
+    <p className="text-xs text-moo-ink/70">
+      In Downloads, right-click <b>Install Moo Local.sh</b> → Properties → allow it to run as a program, then open it
+      (choose Run if asked). Ollama&apos;s own installer asks for this computer&apos;s password once.
+    </p>
+  );
+}
 
 export default function AiSetupPage() {
   const router = useRouter();
@@ -15,9 +75,21 @@ export default function AiSetupPage() {
   const [address, setAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detected, setDetected] = useState<System | null>(null);
+  const [chosen, setChosen] = useState<System>("windows");
+  const [base, setBase] = useState({ links: "", http: "http://moo.local:8000" });
 
-  const host = typeof window !== "undefined" ? window.location.hostname : "moo.local";
-  const installLine = `curl -fsSL http://${host}:8000/local-ai/install.sh | bash`;
+  useEffect(() => {
+    const s = detectSystem();
+    setDetected(s);
+    if (s) setChosen(s);
+    setBase(mooBase());
+  }, []);
+
+  const installLine = `curl -fsSL ${base.http}/local-ai/install.sh | bash`;
+  const href = (s: System) => `${base.links}/local-ai/download/${s}`;
+  const main = SYSTEMS.find((s) => s.id === chosen)!;
+  const others = SYSTEMS.filter((s) => s.id !== chosen);
 
   const addByAddress = async () => {
     // "192.168.1.20", "mac.local:8765" or a full address all work.
@@ -44,27 +116,52 @@ export default function AiSetupPage() {
       back="/ai"
     >
       <div className="moo-card flex flex-col gap-2">
-        <h2 className="font-semibold">1 · A Mac with Apple silicon</h2>
+        <h2 className="font-semibold">1 · A computer: Windows, Mac or Linux</h2>
         <p className="text-sm text-moo-ink/80">
-          The best quality. Open Terminal on that Mac, paste this line and press Return. It installs Moo Local (about
-          5 GB), downloads a story model and the voices, and starts it. The Mac then appears under Local machines.
+          The best quality. On that computer, download Moo Local and open the file. It installs everything into your
+          home folder (about 6 GB, so allow some time), downloads a story model and the voices, and starts Moo Local.
+          It then starts by itself whenever someone logs in, and the computer appears under Local machines.
         </p>
-        <code className="block break-all rounded-moo bg-moo-ink/5 p-2 text-xs">{installLine}</code>
-        <Button
-          variant="secondary"
-          onClick={() => navigator.clipboard?.writeText(installLine).then(() => setCopied(true)).catch(() => {})}
-        >
-          {copied ? "Copied" : "Copy the line"}
-        </Button>
-        <p className="text-xs text-moo-ink/60">
-          After the Mac restarts, Moo Local has to be started again. The installer prints the command for that.
+        {detected === null && (
+          <p className="text-xs text-moo-ink/70">
+            This looks like a phone or tablet. Open this page on the computer that should do the work, or choose
+            its system below.
+          </p>
+        )}
+        <a className="moo-button text-center" href={href(main.id)} download>
+          Download for {main.label}
+        </a>
+        <p className="text-xs text-moo-ink/70">
+          Also for{" "}
+          {others.map((s, i) => (
+            <span key={s.id}>
+              {i > 0 && " · "}
+              <a className="underline" href={href(s.id)} download onClick={() => setChosen(s.id)}>
+                {s.label}
+              </a>
+            </span>
+          ))}
         </p>
+        <HowToOpen system={chosen} />
+        <details className="text-xs text-moo-ink/70">
+          <summary className="cursor-pointer">Or with a Terminal line (Mac or Linux)</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p>Paste this line into Terminal and press Return. It does the same as the download.</p>
+            <code className="block break-all rounded-moo bg-moo-ink/5 p-2">{installLine}</code>
+            <Button
+              variant="secondary"
+              onClick={() => navigator.clipboard?.writeText(installLine).then(() => setCopied(true)).catch(() => {})}
+            >
+              {copied ? "Copied" : "Copy the line"}
+            </Button>
+          </div>
+        </details>
       </div>
 
       <div className="moo-card flex flex-col gap-2">
-        <h2 className="font-semibold">2 · Any other computer, tablet or phone</h2>
+        <h2 className="font-semibold">2 · Any device, nothing to install</h2>
         <p className="text-sm text-moo-ink/80">
-          Nothing to install. Open the Moo website on that device, go to AI engine and tap This device. Its browser
+          Open the Moo website on that computer, tablet or phone, go to AI engine and tap This device. Its browser
           then does the work, and the device appears under Local machines for as long as the page stays open.
         </p>
       </div>
