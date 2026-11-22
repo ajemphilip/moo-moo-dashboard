@@ -17,6 +17,7 @@ export default function ConnectPage() {
   const [bluetoothError, setBluetoothError] = useState<string | null>(null);
   const [setupCode, setSetupCode] = useState("");
   const [supportsBluetooth, setSupportsBluetooth] = useState<boolean | null>(null);
+  const [address, setAddress] = useState("moo.local");
 
   useEffect(() => {
     setSupportsBluetooth(bluetoothSupported());
@@ -111,12 +112,40 @@ export default function ConnectPage() {
           <Spinner label="Looking for your Moo..." />
         ) : (
           <Button variant="secondary" onClick={() => {
-            if (githubPages) window.location.assign("http://10.41.0.1:8000");
+            if (githubPages) window.location.assign("http://10.41.0.1:8000/connect/");
             else setPolling(true);
           }}>
             I&apos;m connected to Moo wifi
           </Button>
         )}
+      </div>
+
+      <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-moo-ink/50">
+        <span className="h-px flex-1 bg-moo-ink/10" />or<span className="h-px flex-1 bg-moo-ink/10" />
+      </div>
+
+      <div className="moo-card flex flex-col gap-3">
+        <div>
+          <h2 className="font-semibold">It is already on my wifi</h2>
+          <p className="text-sm text-moo-ink/70 mt-1">
+            Open the Moo at its address. On iPhones, iPads and Macs moo.local works; other devices may need the number, such as
+            192.168.2.52. This device has to be on the same wifi as the Moo.
+          </p>
+        </div>
+        <input
+          className="moo-input font-mono"
+          value={address}
+          onChange={(event) => setAddress(event.target.value.trim())}
+          autoCapitalize="none"
+          autoCorrect="off"
+          aria-label="The Moo's address"
+        />
+        <Button variant="secondary" onClick={() => {
+          const host = address.replace(/^https?:\/\//, "").replace(/[:/].*$/, "") || "moo.local";
+          window.location.assign(`http://${host}:8000/dashboard/`);
+        }}>
+          Open the Moo
+        </Button>
       </div>
     </StepLayout>
   );

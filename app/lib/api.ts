@@ -66,6 +66,7 @@ export interface Status {
   configured: boolean;
   wifi_connected: boolean;
   wifi_ssid: string | null;
+  address?: string | null; // the Moo's address on the home wifi
   assistant_running: boolean;
   device_id: string;
   version: string;

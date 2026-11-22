@@ -18,6 +18,9 @@ export default function WifiPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState(false);
+  // Where the Moo is on the home wifi once it has joined, shown when this page cannot carry on there itself.
+  const [joined, setJoined] = useState<{ ssid: string; address: string } | null>(null);
+  const githubPages = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
 
   const scan = useQuery({
     queryKey: ["wifi-scan"],
@@ -50,6 +53,12 @@ export default function WifiPage() {
         // The API-key step can still save a complete config if this sync fails.
       }
       const status = await api.status();
+      // A page on GitHub Pages reached the Moo over Bluetooth. It cannot talk to the Moo's plain address on
+      // the wifi, so it shows the address and the parent opens the Moo there.
+      if (githubPages && status.address) {
+        setJoined({ ssid: status.wifi_ssid ?? selected.ssid, address: status.address });
+        return;
+      }
       router.replace(status.configured ? "/dashboard" : "/apikey");
     } catch (err) {
       setError(err instanceof PiApiError ? err.message : "Could not connect.");
@@ -57,13 +66,32 @@ export default function WifiPage() {
     }
   };
 
+  if (joined) {
+    const url = `http://${joined.address}:8000/apikey/`;
+    return (
+      <StepLayout step={2} totalSteps={6} title="Moo is on your wifi" subtitle={`It joined ${joined.ssid}.`}>
+        <div className="moo-card flex flex-col gap-2">
+          <p className="text-sm">
+            The rest of the setup happens on the Moo itself, at <strong className="font-mono">{joined.address}</strong>. This device has to
+            be on {joined.ssid} too.
+          </p>
+          <p className="text-xs text-moo-ink/60">
+            Your browser may warn that the Moo&apos;s page is not secure. That is because the Moo is on your home network, not the internet.
+          </p>
+        </div>
+        <Button onClick={() => window.location.assign(url)} className="mt-auto">Continue on the Moo</Button>
+      </StepLayout>
+    );
+  }
+
   if (handoff) {
     return (
       <StepLayout title="Connecting Moo..." subtitle="Your Moo is joining your home wifi. This usually takes 20–60 seconds.">
         <Spinner label="Looking for your Moo on the home network..." />
         {getTransportKind() !== "bluetooth" && (
           <p className="text-sm text-moo-ink/70 text-center">
-            Switch this device back to your home wifi if it doesn&apos;t happen automatically.
+            Moo leaves its own wifi now. Put this device back on {selected?.ssid ?? "your home wifi"}, the same wifi as the Moo, if it does not
+            happen by itself.
           </p>
         )}
       </StepLayout>
