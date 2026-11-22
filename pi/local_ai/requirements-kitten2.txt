@@ -1,4 +1,8 @@
-# Kitten TTS 2 needs newer libraries than Moo Local. It gets its own environment:
-#   python3.12 -m venv ~/.moo-kitten2-venv
-#   ~/.moo-kitten2-venv/bin/pip install -r requirements-kitten2.txt
-kittenml[mlx]==0.9.8
+# Kitten TTS 2 needs newer libraries than Moo Local, so it gets its own
+# environment (~/.moo-kitten2-venv); the installers make it. The small models
+# (Pico, Nano, Mini) run through ONNX on any computer; the full model needs
+# MLX, so only on Apple silicon. Intel Macs have no PyTorch build for it.
+kittenml[mlx]==0.9.8 ; sys_platform == "darwin" and platform_machine == "arm64"
+kittenml==0.9.8 ; sys_platform != "darwin"
+# The English tagger misaki would otherwise try to fetch with pip at first use.
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl ; sys_platform != "darwin" or platform_machine == "arm64"

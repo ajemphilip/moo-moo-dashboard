@@ -1,79 +1,228 @@
 #!/bin/bash
-# Sets up Moo Local on this computer, so a Moo on the same home network can
-# use it for listening, stories and voice. Offered by the Moo itself:
+# Sets up Moo Local on this computer (macOS or Linux), so a Moo on the same
+# home network can use it for listening, stories and voice. The Moo hands it
+# out as a file to double-click ("Install Moo Local.command" on a Mac,
+# "Install Moo Local.sh" on Linux) and as a Terminal line:
 #
 #     curl -fsSL http://moo.local:8000/local-ai/install.sh | bash
 #
-# It needs a Mac with Apple silicon and Homebrew. It installs Python 3.12 and
-# Ollama with Homebrew if they are missing, puts Moo Local into ~/.moo-local,
-# downloads one story model and the voices (about 5 GB), and starts Moo Local.
-# Run it again at any time to update. Nothing is set to start at login.
-set -euo pipefail
+# Everything goes into the home folder; nothing needs an administrator,
+# except Ollama's own installer on Linux, which asks for the password once.
+#   ~/.moo-local/app          Moo Local itself, fetched from the Moo
+#   ~/.moo-local/bin          uv, which brings its own Python 3.12
+#   ~/.moo-local-venv         Moo Local's libraries
+#   ~/.moo-kitten2-venv       Kitten TTS 2's libraries
+#   ~/.moo-local/ollama       Ollama, on a Mac that does not have it yet
+# It downloads one story model (gemma3:4b) and the voices, about 6 GB, then
+# starts Moo Local and sets it to start again at every login. Run it again
+# at any time to update.
+set -uo pipefail
 
 MOO="${MOO_URL:-__MOO_URL__}"
-APP="$HOME/.moo-local/app"
+ROOT="$HOME/.moo-local"
+APP="$ROOT/app"
 VENV="$HOME/.moo-local-venv"
+KVENV="$HOME/.moo-kitten2-venv"
 STORY_MODEL="${MOO_LOCAL_CHAT_MODEL:-gemma3:4b}"
+UV_VERSION="0.13.9"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+# Opened from a Linux file manager there may be no window; open one, so the
+# progress shows and Ollama's installer can ask for the password.
+if [ "$OS" = "Linux" ] && [ ! -t 1 ] && [ -z "${MOO_IN_TERMINAL:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
+  export MOO_IN_TERMINAL=1
+  for t in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal kitty alacritty xterm; do
+    if command -v "$t" >/dev/null 2>&1; then
+      case "$t" in
+        gnome-terminal) exec "$t" -- bash "${BASH_SOURCE[0]}" ;;
+        *) exec "$t" -e bash "${BASH_SOURCE[0]}" ;;
+      esac
+    fi
+  done
+fi
 
 say() { printf '\n==> %s\n' "$1"; }
-
-if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
-  echo "Moo Local needs a Mac with Apple silicon (M1 or newer)."
-  echo "On another computer, open the Moo website in its browser and choose This device."
+fail() {
+  printf '\nMoo Local could not be set up: %s\n' "$1"
+  printf 'The details are in %s. Running this again continues where it stopped.\n' "$ROOT/install.log"
+  if [ -t 0 ]; then printf 'Press Return to close this window. '; read -r _; fi
   exit 1
+}
+done_ok() {
+  if [ -t 0 ] && [ -z "${MOO_NO_PAUSE:-}" ]; then printf '\nPress Return to close this window. '; read -r _; fi
+  exit 0
+}
+
+mkdir -p "$APP" "$ROOT/bin" "$ROOT/kokoro" "$ROOT/voices"
+exec > >(tee -a "$ROOT/install.log") 2>&1
+echo "--- $(date) $OS $ARCH, from $MOO"
+
+if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
+  fail "this installer is for macOS and Linux. On Windows, use Install Moo Local.cmd from the Moo website."
 fi
-if ! command -v brew >/dev/null 2>&1; then
-  echo "Moo Local needs Homebrew. Install it from https://brew.sh and run this again."
-  exit 1
+command -v curl >/dev/null 2>&1 || fail "curl is missing. Install it (for example: sudo apt install curl) and run this again."
+if [ "$OS" = "Darwin" ] && [ "$ARCH" != "arm64" ]; then
+  echo "This is a Mac with an Intel processor. Moo Local works, with fewer voices:"
+  echo "Pocket and Kitten 2 need a newer PyTorch than Intel Macs can have."
 fi
 
-say "Python 3.12 and Ollama"
-brew list python@3.12 >/dev/null 2>&1 || brew install python@3.12
-command -v ollama >/dev/null 2>&1 || brew install ollama
-if ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-  (nohup ollama serve >"$HOME/.moo-local-ollama.log" 2>&1 &)
-  for _ in $(seq 1 20); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1; done
-fi
-
-say "Moo Local from $MOO"
-mkdir -p "$APP" "$HOME/.moo-local/kokoro" "$HOME/.moo-local/voices"
+# --- Moo Local's files, from the Moo ---------------------------------------
+say "Moo Local from the Moo ($MOO)"
 for f in moo_local.py mlx_voice_worker.py kitten2_worker.py requirements-base.txt requirements.txt requirements-kitten2.txt; do
-  curl -fsSL "$MOO/local-ai/files/$f" -o "$APP/$f"
+  curl -fsSL "$MOO/local-ai/files/$f" -o "$APP/$f.new" || fail "the Moo at $MOO did not answer. Is this computer on the same wifi as the Moo?"
+  mv "$APP/$f.new" "$APP/$f"
 done
 
-say "Python libraries (a few minutes the first time)"
-PY="$(brew --prefix python@3.12)/bin/python3.12"
-[ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
-"$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q -r "$APP/requirements-base.txt"
+# --- uv and Python ------------------------------------------------------------
+say "Python 3.12 (through uv)"
+UV="$ROOT/bin/uv"
+if [ ! -x "$UV" ] || ! "$UV" --version 2>/dev/null | grep -q "$UV_VERSION"; then
+  curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR="$ROOT/bin" INSTALLER_NO_MODIFY_PATH=1 sh \
+    || fail "uv could not be downloaded. Check the internet connection."
+fi
+export UV_PYTHON_PREFERENCE=only-managed  # uv's own Python, the same on every computer
+TORCH=()
+[ "$OS" = "Linux" ] && TORCH=(--torch-backend cpu)  # PyTorch's NVIDIA build is 3 GB more and not needed here
 
+# --- Ollama ---------------------------------------------------------------------
+say "Ollama, for the stories"
+OLLAMA="$(command -v ollama || true)"
+for c in /opt/homebrew/bin/ollama /usr/local/bin/ollama /Applications/Ollama.app/Contents/Resources/ollama "$ROOT/ollama/ollama"; do
+  [ -z "$OLLAMA" ] && [ -x "$c" ] && OLLAMA="$c"
+done
+if [ -z "$OLLAMA" ]; then
+  if [ "$OS" = "Darwin" ]; then
+    mkdir -p "$ROOT/ollama"
+    curl -fL --progress-bar https://ollama.com/download/ollama-darwin.tgz -o "$ROOT/ollama/ollama.tgz" \
+      && tar xzf "$ROOT/ollama/ollama.tgz" -C "$ROOT/ollama" && rm -f "$ROOT/ollama/ollama.tgz" \
+      || fail "Ollama could not be downloaded."
+    OLLAMA="$ROOT/ollama/ollama"
+  else
+    echo "Ollama's own installer asks for this computer's password."
+    curl -fsSL https://ollama.com/install.sh | sh || fail "Ollama's installer did not finish."
+    OLLAMA="$(command -v ollama || echo /usr/local/bin/ollama)"
+  fi
+fi
+if ! curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  (nohup "$OLLAMA" serve >"$ROOT/ollama.log" 2>&1 &)
+  for _ in $(seq 1 30); do curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1; done
+fi
+curl -fs http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || fail "Ollama did not start. See $ROOT/ollama.log"
+
+# --- Python libraries -------------------------------------------------------------
+say "Python libraries (several minutes the first time)"
+[ -x "$VENV/bin/python" ] || "$UV" venv --python 3.12 "$VENV" || fail "Python 3.12 could not be set up."
+"$UV" pip install --python "$VENV/bin/python" ${TORCH[@]+"${TORCH[@]}"} -r "$APP/requirements-base.txt" \
+  || fail "the Python libraries could not be installed."
+if [ "$OS" = "Linux" ] || [ "$ARCH" = "arm64" ]; then
+  say "Kitten TTS 2 (its own libraries)"
+  [ -x "$KVENV/bin/python" ] || "$UV" venv --python 3.12 --seed "$KVENV" || fail "Python 3.12 could not be set up for Kitten 2."
+  "$UV" pip install --python "$KVENV/bin/python" ${TORCH[@]+"${TORCH[@]}"} -r "$APP/requirements-kitten2.txt" \
+    || echo "Kitten TTS 2 could not be installed; Moo Local works without it."
+fi
+
+if [ -z "${MOO_LOCAL_NO_MODELS:-}" ]; then  # (set only to test the installer)
+# --- Voices --------------------------------------------------------------------
 say "Voices"
 K="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-[ -s "$HOME/.moo-local/kokoro/kokoro-v1.0.onnx" ] || curl -fL --progress-bar "$K/kokoro-v1.0.onnx" -o "$HOME/.moo-local/kokoro/kokoro-v1.0.onnx"
-[ -s "$HOME/.moo-local/kokoro/voices-v1.0.bin" ] || curl -fL --progress-bar "$K/voices-v1.0.bin" -o "$HOME/.moo-local/kokoro/voices-v1.0.bin"
+for f in kokoro-v1.0.onnx voices-v1.0.bin; do
+  [ -s "$ROOT/kokoro/$f" ] || { curl -fL --progress-bar "$K/$f" -o "$ROOT/kokoro/$f.part" && mv "$ROOT/kokoro/$f.part" "$ROOT/kokoro/$f"; } \
+    || echo "Kokoro's $f could not be downloaded."
+done
 P="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
 for v in amy/medium/en_US-amy-medium kristin/medium/en_US-kristin-medium ryan/high/en_US-ryan-high; do
   n="$(basename "$v")"
-  [ -s "$HOME/.moo-local/voices/$n.onnx" ] || curl -fsSL "$P/$v.onnx" -o "$HOME/.moo-local/voices/$n.onnx"
-  [ -s "$HOME/.moo-local/voices/$n.onnx.json" ] || curl -fsSL "$P/$v.onnx.json" -o "$HOME/.moo-local/voices/$n.onnx.json"
+  [ -s "$ROOT/voices/$n.onnx" ] || curl -fsSL "$P/$v.onnx" -o "$ROOT/voices/$n.onnx" || rm -f "$ROOT/voices/$n.onnx"
+  [ -s "$ROOT/voices/$n.onnx.json" ] || curl -fsSL "$P/$v.onnx.json" -o "$ROOT/voices/$n.onnx.json" || rm -f "$ROOT/voices/$n.onnx.json"
 done
+(cd "$APP" && "$VENV/bin/python" moo_local.py --prepare) || echo "Some voices could not be prepared; Moo Local uses the others."
 
+# --- Story model ---------------------------------------------------------------
 say "Story model $STORY_MODEL (about 3 GB the first time)"
-ollama pull "$STORY_MODEL"
-
-say "Starting Moo Local"
-pkill -f "$APP/moo_local.py" 2>/dev/null || true
-sleep 1
-(cd "$APP" && MOO_LOCAL_CHAT_MODEL="$STORY_MODEL" nohup "$VENV/bin/python" "$APP/moo_local.py" >>"$HOME/.moo-local/server.log" 2>&1 &)
-for _ in $(seq 1 40); do curl -fs http://127.0.0.1:8765/health >/dev/null 2>&1 && break; sleep 1; done
-if curl -fs http://127.0.0.1:8765/health >/dev/null 2>&1; then
-  echo
-  echo "Moo Local is running on this computer. On the Moo website, open AI engine:"
-  echo "this computer now appears under A computer. Choose it there."
-  echo
-  echo "After a restart of this computer, start Moo Local again with:"
-  echo "  cd $APP && nohup $VENV/bin/python moo_local.py >> ~/.moo-local/server.log 2>&1 &"
-else
-  echo "Moo Local did not start. See ~/.moo-local/server.log"
-  exit 1
+"$OLLAMA" pull "$STORY_MODEL" || fail "the story model could not be downloaded."
 fi
+
+# --- Start now and at every login ------------------------------------------------
+say "Starting Moo Local"
+if [ "$OS" = "Darwin" ]; then
+  PLIST="$HOME/Library/LaunchAgents/local.moo.moo-local.plist"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
+  pkill -f "$APP/moo_local.py" 2>/dev/null || true
+  cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.moo.moo-local</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$VENV/bin/python</string>
+    <string>$APP/moo_local.py</string>
+    <string>--log</string>
+    <string>$ROOT/server.log</string>
+  </array>
+  <key>WorkingDirectory</key><string>$APP</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>MOO_OLLAMA_BIN</key><string>$OLLAMA</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+</dict>
+</plist>
+EOF
+  if [ -n "${MOO_NO_LOGIN_ITEM:-}" ]; then
+    rm -f "$PLIST"
+    (cd "$APP" && MOO_OLLAMA_BIN="$OLLAMA" nohup "$VENV/bin/python" "$APP/moo_local.py" --log "$ROOT/server.log" >/dev/null 2>&1 &)
+  else
+    launchctl bootstrap "gui/$(id -u)" "$PLIST"
+  fi
+else
+  pkill -f "$APP/moo_local.py" 2>/dev/null || true
+  UNIT="$HOME/.config/systemd/user/moo-local.service"
+  if [ -z "${MOO_NO_LOGIN_ITEM:-}" ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$UNIT")"
+    cat >"$UNIT" <<EOF
+[Unit]
+Description=Moo Local, the Moo's AI on this computer
+After=network-online.target
+
+[Service]
+WorkingDirectory=$APP
+Environment=MOO_OLLAMA_BIN=$OLLAMA
+ExecStart=$VENV/bin/python $APP/moo_local.py --log $ROOT/server.log
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable moo-local.service >/dev/null 2>&1
+    systemctl --user restart moo-local.service
+  else
+    if [ -z "${MOO_NO_LOGIN_ITEM:-}" ]; then
+      mkdir -p "$HOME/.config/autostart"
+      cat >"$HOME/.config/autostart/moo-local.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Moo Local
+Exec=$VENV/bin/python $APP/moo_local.py --log $ROOT/server.log
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+    fi
+    (cd "$APP" && MOO_OLLAMA_BIN="$OLLAMA" nohup "$VENV/bin/python" "$APP/moo_local.py" --log "$ROOT/server.log" >/dev/null 2>&1 &)
+  fi
+fi
+
+for _ in $(seq 1 60); do curl -fs http://127.0.0.1:${MOO_LOCAL_PORT:-8765}/health >/dev/null 2>&1 && break; sleep 1; done
+curl -fs http://127.0.0.1:${MOO_LOCAL_PORT:-8765}/health >/dev/null 2>&1 || fail "Moo Local did not start. See $ROOT/server.log"
+cat <<EOF
+
+Moo Local is running on this computer, and starts by itself at every login.
+On the Moo website, open AI engine: this computer appears under Local
+machines. Choose it there. This window can be closed.
+EOF
+done_ok

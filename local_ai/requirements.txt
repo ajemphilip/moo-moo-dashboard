@@ -1,7 +1,8 @@
-# Moo Local: speech, story and voice for the Moo, computed on a Mac with Apple silicon.
+# Moo Local with every voice, for a Mac with Apple silicon (the acted voices
+# Chatterbox, Orpheus and Qwen3 included). Other computers use requirements-base.txt.
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
-python-multipart==0.0.19
+python-multipart==0.0.34
 httpx==0.28.1
 numpy==2.1.3
 mlx-whisper==0.4.2

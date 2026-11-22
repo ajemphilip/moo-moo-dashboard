@@ -6,7 +6,8 @@ four kinds the Moo uses, in OpenAI's format, so the Pi code only changes the
 address it talks to:
 
   POST /v1/chat/completions      story, games, checks   -> Ollama (gemma3:12b)
-  POST /v1/audio/transcriptions  the child's speech     -> Whisper large-v3-turbo (mlx-whisper)
+  POST /v1/audio/transcriptions  the child's speech     -> Whisper (mlx-whisper on Apple silicon,
+                                                           faster-whisper everywhere else)
   POST /v1/audio/speech          Moo's voice            -> Kokoro (kokoro-onnx), Piper as fallback
   POST /v1/moderations           safety check           -> Ollama, yes or no
   GET  /health                   what is running here
@@ -14,7 +15,14 @@ address it talks to:
 It announces itself on the network as `_mooai._tcp`, so the Moo's setup page
 finds it without anyone typing an address.
 
-Run:  ~/.moo-local-venv/bin/python moo_local.py
+It runs on macOS, Windows and Linux. The voices that need Apple's MLX
+(Orpheus, Qwen3-TTS, the full Kitten TTS 2) and the Mac's own voices are
+offered only on a Mac with Apple silicon; the voice list it reports names
+only what works on this computer.
+
+Run:      ~/.moo-local-venv/bin/python moo_local.py
+Prepare:  ~/.moo-local-venv/bin/python moo_local.py --prepare
+          (downloads the listening models and voices, then exits)
 """
 
 from __future__ import annotations
@@ -23,8 +31,10 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import socket
+import sys
 import threading
 import time
 import wave
@@ -36,14 +46,26 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Started at login there is no window: everything goes to the log file.
+# (On Windows pythonw.exe has no output at all without this.)
+if "--log" in sys.argv:
+    _log_file = open(sys.argv[sys.argv.index("--log") + 1], "a", buffering=1, encoding="utf-8")
+    sys.stdout = sys.stderr = _log_file
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
 log = logging.getLogger("moo-local")
+
+# Apple silicon gets the MLX engines; every other computer the portable ones.
+APPLE = sys.platform == "darwin" and platform.machine() == "arm64" and not os.environ.get("MOO_LOCAL_PORTABLE")
+WINDOWS = os.name == "nt"
 
 PORT = int(os.environ.get("MOO_LOCAL_PORT", "8765"))
 OLLAMA = os.environ.get("MOO_OLLAMA_URL", "http://127.0.0.1:11434")
 CHAT_MODEL = os.environ.get("MOO_LOCAL_CHAT_MODEL", "gemma3:12b")
 FALLBACK_CHAT_MODEL = "llama3.2:3b"
-WHISPER_MODEL = os.environ.get("MOO_LOCAL_WHISPER", "mlx-community/whisper-large-v3-turbo")
+WHISPER_MODEL = os.environ.get(
+    "MOO_LOCAL_WHISPER",
+    "mlx-community/whisper-large-v3-turbo" if APPLE else "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+)
 KOKORO_DIR = Path(os.environ.get("MOO_LOCAL_KOKORO", str(Path.home() / ".moo-local" / "kokoro")))
 KOKORO_VOICE = os.environ.get("MOO_LOCAL_KOKORO_VOICE", "af_heart")
 VOICE_PATH = Path(
@@ -73,13 +95,17 @@ async def _installed() -> list[str]:
 
 async def _model(requested: str | None = None) -> str:
     """The story model to use: the one the Moo asked for if it is installed here,
-    else Gemma 3 12B, else Llama 3.2 3B."""
+    else Gemma 3 12B, else the best scoring model installed, else Llama 3.2 3B."""
     global _chat_model
     names = await _installed()
     if requested and requested in names:
         return requested
-    if not _chat_model:
-        _chat_model = CHAT_MODEL if CHAT_MODEL in names else FALLBACK_CHAT_MODEL
+    if not _chat_model or (names and _chat_model not in names):
+        def have(n: str) -> str | None:  # Ollama keeps "phi4-mini" as "phi4-mini:latest"
+            return n if n in names else (f"{n}:latest" if f"{n}:latest" in names else None)
+
+        best = [have(n) for n, _ in _STORY_ORDER if have(n)]
+        _chat_model = have(CHAT_MODEL) or (best[-1] if best else FALLBACK_CHAT_MODEL)
         log.info("default story model: %s", _chat_model)
     return _chat_model
 
@@ -170,18 +196,75 @@ def transcriptions(
     model: str = Form("whisper-1"),
     language: str | None = Form(None),
 ) -> JSONResponse:
-    import mlx_whisper
-
     audio = _wav_to_float16k(file.file.read())
     if audio.size < 1600:  # under 0.1 s
         return JSONResponse({"text": ""})
     started = time.time()
-    repo = dict((k, r) for k, r, _ in LISTEN_MODELS).get(model, WHISPER_MODEL)
+    repo = _listen_repo(model)
     with _whisper_lock:
-        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo)
-    text = (result.get("text") or "").strip()
+        text = _transcribe(audio, repo, language)
     log.info("heard in %.1fs with %s: %r", time.time() - started, repo.split("/")[-1], text)
     return JSONResponse({"text": text})
+
+
+def _listen_repo(model_id: str) -> str:
+    """The Whisper model behind the id the Moo sends. An id it does not know
+    ("whisper-1" from older screens) gets the largest one downloaded here."""
+    repos = {k: r for k, r, _ in LISTEN_MODELS}
+    if model_id in repos:
+        return repos[model_id]
+    cached = [r for _, r, _ in LISTEN_MODELS if _cached(r)]
+    return WHISPER_MODEL if WHISPER_MODEL in cached or not cached else cached[-1]
+
+
+_fw: dict[str, object] = {}  # one faster-whisper model in memory
+_fw_cuda = True  # cleared when the graphics card fails once
+
+
+def _faster_whisper(repo: str, cuda: bool):
+    from faster_whisper import WhisperModel
+
+    key = f"{repo}|{'cuda' if cuda else 'cpu'}"
+    if key not in _fw:
+        _fw.clear()
+        if cuda:
+            _fw[key] = WhisperModel(repo, device="cuda", compute_type="float16")
+        else:
+            _fw[key] = WhisperModel(repo, device="cpu", compute_type="int8")
+        log.info("listening with %s on the %s", repo.split("/")[-1], "graphics card" if cuda else "processor")
+    return _fw[key]
+
+
+def _cuda_present() -> bool:
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def _transcribe(audio: np.ndarray, repo: str, language: str | None) -> str:
+    """Speech to text: mlx-whisper on Apple silicon, faster-whisper elsewhere
+    (an NVIDIA card when it works, the processor otherwise)."""
+    global _fw_cuda
+    if repo.startswith("mlx-community/"):
+        import mlx_whisper
+
+        result = mlx_whisper.transcribe(audio, path_or_hf_repo=repo)
+        return (result.get("text") or "").strip()
+    lang = language or ("en" if repo.endswith(".en") else None)
+    if _fw_cuda and _cuda_present():
+        try:
+            segments, _ = _faster_whisper(repo, True).transcribe(audio, language=lang)
+            return " ".join(s.text.strip() for s in segments).strip()
+        except Exception:
+            # Usually missing CUDA libraries. The processor is slower but always works.
+            log.warning("listening on the graphics card failed; using the processor from now on", exc_info=True)
+            _fw_cuda = False
+            _fw.clear()
+    segments, _ = _faster_whisper(repo, False).transcribe(audio, language=lang)
+    return " ".join(s.text.strip() for s in segments).strip()
 
 
 # --- Moo's voice -------------------------------------------------------------
@@ -260,6 +343,11 @@ async def speech(request: Request) -> Response:
         engine = "kokoro"
     if engine == "supertonic" and not _supertonic_ready():
         engine = "kokoro"
+    if engine == "mac" and not APPLE:
+        engine = "kokoro"
+    if engine in ("orpheus", "qwen3", "kitten2") and not APPLE:
+        engine = "kitten2s" if _kitten2s_ready() else "kokoro"
+        voice_id = ""
     if engine == "mac" and voice_id in {v for v, _ in MAC_VOICES}:
         pass
     elif engine == "piper" and voice_id in _piper_voices():
@@ -362,6 +450,20 @@ KOKORO_VOICES = [
 
 
 
+def _quiet() -> dict:
+    """Popen options for a helper process: its messages go to our log, and
+    on Windows it opens no console window."""
+    kw: dict = {}
+    try:
+        sys.stderr.fileno()
+        kw["stderr"] = sys.stderr
+    except Exception:
+        kw["stderr"] = __import__("subprocess").DEVNULL
+    if WINDOWS:
+        kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    return kw
+
+
 _ready_cache: dict[str, bool] = {}
 
 
@@ -381,7 +483,7 @@ def _chatterbox_ready() -> bool:
 
 
 def _orpheus_ready() -> bool:
-    return _importable("mlx_audio.tts.utils")
+    return APPLE and _importable("mlx_audio.tts.utils")
 
 
 ORPHEUS_MODEL = os.environ.get("MOO_LOCAL_ORPHEUS", "mlx-community/orpheus-3b-0.1-ft-4bit")
@@ -403,7 +505,7 @@ def _orpheus_worker():
     if _orpheus is None or _orpheus.poll() is not None:
         _orpheus = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("mlx_voice_worker.py"))],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, **_quiet(),
         )
         ready = _orpheus.stdout.readline()
         if not ready:
@@ -433,12 +535,16 @@ KITTEN2S_VOICES = [
     ("Max", "Max — not in Pico"), ("Danny", "Danny — not in Pico"),
 ]
 _KITTEN2S_PICO = {"Eleanor", "Edith", "Otis", "Frank"}
-KITTEN2_PYTHON = Path(os.environ.get("MOO_LOCAL_KITTEN2_PYTHON", str(Path.home() / ".moo-kitten2-venv" / "bin" / "python")))
+KITTEN2_PYTHON = Path(os.environ.get(
+    "MOO_LOCAL_KITTEN2_PYTHON",
+    str(Path.home() / ".moo-kitten2-venv" / ("Scripts/python.exe" if WINDOWS else "bin/python")),
+))
 _kitten2 = None  # the worker process
 
 
 def _kitten2_ready() -> bool:
-    return KITTEN2_PYTHON.exists() and _cached("KittenML/kitten-tts-2")
+    # The full model runs through MLX, so only on Apple silicon.
+    return APPLE and KITTEN2_PYTHON.exists() and _cached("KittenML/kitten-tts-2")
 
 
 def _kitten2s_ready() -> bool:
@@ -460,6 +566,7 @@ def _kitten2_say(text: str, voice: str, repo: str) -> tuple[int, np.ndarray]:
         _kitten2 = subprocess.Popen(
             [str(KITTEN2_PYTHON), str(Path(__file__).with_name("kitten2_worker.py"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+            encoding="utf-8", **_quiet(),
         )
         if not _kitten2.stdout.readline():
             raise RuntimeError("Kitten TTS 2 worker did not start")
@@ -475,8 +582,19 @@ def _kitten2_say(text: str, voice: str, repo: str) -> tuple[int, np.ndarray]:
             return wf.getframerate(), np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
 
 
+def _hub_cache() -> Path:
+    try:
+        from huggingface_hub import constants
+
+        return Path(constants.HF_HUB_CACHE)
+    except Exception:
+        return Path.home() / ".cache" / "huggingface" / "hub"
+
+
 def _cached(repo: str) -> bool:
-    return (Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo.replace("/", "--"))).exists()
+    """Whether a Hugging Face model is downloaded (its snapshot, not just a folder)."""
+    snaps = _hub_cache() / ("models--" + repo.replace("/", "--")) / "snapshots"
+    return snaps.is_dir() and any(snaps.iterdir())
 
 
 # Each voice model's own quality settings (id, label, what it means here).
@@ -655,12 +773,18 @@ def _supertonic_say(text: str, voice: str, steps: int = 8) -> tuple[int, np.ndar
     return int(getattr(_supertonic, "sample_rate", 44100)), (np.clip(audio, -1, 1) * 32767).astype(np.int16)
 
 
-# Whisper sizes for listening (id the Moo sends, model, label).
+# Whisper sizes for listening (id the Moo sends, model, label). The same
+# sizes in MLX on Apple silicon and for faster-whisper everywhere else.
 LISTEN_MODELS = [
     ("whisper-tiny", "mlx-community/whisper-tiny.en-mlx", "Tiny — instant, misses more words"),
     ("whisper-base", "mlx-community/whisper-base.en-mlx", "Base — very fast"),
     ("whisper-small", "mlx-community/whisper-small.en-mlx", "Small — fast and good"),
     ("whisper-turbo", "mlx-community/whisper-large-v3-turbo", "Large turbo — best"),
+] if APPLE else [
+    ("whisper-tiny", "Systran/faster-whisper-tiny.en", "Tiny — instant, misses more words"),
+    ("whisper-base", "Systran/faster-whisper-base.en", "Base — very fast"),
+    ("whisper-small", "Systran/faster-whisper-small.en", "Small — fast and good"),
+    ("whisper-turbo", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "Large turbo — best"),
 ]
 
 # Story models from the lowest to the highest score in the test of
@@ -701,8 +825,7 @@ TIERS = [
 
 
 def _listen_ready(repo: str) -> bool:
-    cache = Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + repo.replace("/", "--"))
-    return cache.exists()
+    return _cached(repo)
 
 
 @app.get("/moo/options")
@@ -716,8 +839,11 @@ async def options() -> dict:
     story = [{"id": name(n), "label": l} for n, l in _STORY_ORDER if name(n)]
     known = {name(n) for n, _ in _STORY_ORDER}
     story += [{"id": n, "label": n} for n in sorted(installed - known) if "coder" not in n and "embed" not in n]
-    engines = [{"id": "mac", "label": "Mac voices — instant, plain"}]
-    voices_by_engine: dict[str, list] = {"mac": [{"id": v, "label": l} for v, l in MAC_VOICES]}
+    engines: list[dict] = []
+    voices_by_engine: dict[str, list] = {}
+    if APPLE:  # the Mac's own `say` voices
+        engines.append({"id": "mac", "label": "Mac voices — instant, plain"})
+        voices_by_engine["mac"] = [{"id": v, "label": l} for v, l in MAC_VOICES]
     piper = _piper_voices()
     if piper:
         engines.append({"id": "piper", "label": "Piper — very fast, clear"})
@@ -731,7 +857,7 @@ async def options() -> dict:
         engines.append({"id": "supertonic", "label": "Supertonic — natural, quick"})
         voices_by_engine["supertonic"] = [{"id": v, "label": l} for v, l in SUPERTONIC_VOICES]
     if _kitten2s_ready():
-        engines.insert(1, {"id": "kitten2s", "label": "Kitten 2 small — tiny and the fastest voice"})
+        engines.insert(1 if APPLE else 0, {"id": "kitten2s", "label": "Kitten 2 small — tiny and the fastest voice"})
         voices_by_engine["kitten2s"] = [{"id": v, "label": l} for v, l in KITTEN2S_VOICES]
     if _kokoro_ready():
         engines.append({"id": "kokoro", "label": "Kokoro — natural, quick"})
@@ -761,7 +887,8 @@ async def options() -> dict:
         "story_models": story,
         "default_story_model": await _model(),
         "listen_models": listen,
-        "default_listen_model": "whisper-turbo",
+        "default_listen_model": "whisper-turbo" if "whisper-turbo" in listen_ids else (
+            listen[-1]["id"] if listen else "whisper-turbo"),
         "voice_engines": engines,
         "voices_by_engine": voices_by_engine,
         "voice_qualities": {
@@ -779,21 +906,16 @@ async def options() -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    ollama_ok = False
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            tags = (await client.get(f"{OLLAMA}/api/tags")).json()
-        names = {m.get("name") for m in tags.get("models", [])}
-        ollama_ok = CHAT_MODEL in names or FALLBACK_CHAT_MODEL in names
-    except Exception:
-        pass
+    names = await _installed()
+    ollama_ok = bool(names) and (await _model()) in names
     return {
         "service": "moo-local",
         "version": "0.1.0",
         "computer": socket.gethostname(),
+        "system": f"{platform.system()} {platform.machine()}",
         "story_model": _chat_model or CHAT_MODEL,
         "story_model_ready": ollama_ok,
-        "speech_model": WHISPER_MODEL,
+        "speech_model": _listen_repo("whisper-1"),
         "voice": f"kokoro {KOKORO_VOICE}" if _kokoro_ready() else VOICE_PATH.stem,
         "voice_ready": _kokoro_ready() or VOICE_PATH.exists(),
     }
@@ -810,7 +932,47 @@ def _lan_ip() -> str:
         s.close()
 
 
+def _ollama_up() -> bool:
+    try:
+        return httpx.get(f"{OLLAMA}/api/tags", timeout=3).status_code == 200
+    except Exception:
+        return False
+
+
+def _start_ollama() -> None:
+    """Starts Ollama if it is installed but not running (after a restart, or
+    the copy the installer placed in ~/.moo-local/ollama)."""
+    import shutil
+    import subprocess
+
+    if _ollama_up():
+        return
+    exe = "ollama.exe" if WINDOWS else "ollama"
+    candidates = [
+        os.environ.get("MOO_OLLAMA_BIN", ""),
+        str(Path.home() / ".moo-local" / "ollama" / exe),
+        shutil.which("ollama") or "",
+        "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama",
+        "/Applications/Ollama.app/Contents/Resources/ollama",
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / exe) if WINDOWS else "",
+    ]
+    binary = next((c for c in candidates if c and Path(c).is_file()), None)
+    if not binary:
+        log.warning("Ollama is not installed; stories will not work until it is")
+        return
+    log.info("starting Ollama: %s", binary)
+    subprocess.Popen([binary, "serve"], stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                     start_new_session=not WINDOWS, **_quiet())
+    for _ in range(30):
+        if _ollama_up():
+            return
+        time.sleep(1)
+    log.warning("Ollama did not answer after 30 s")
+
+
 def _announce():
+    if sys.platform == "darwin":
+        return _announce_dns_sd()
     from zeroconf import ServiceInfo, Zeroconf
 
     host = socket.gethostname().split(".")[0]
@@ -825,13 +987,75 @@ def _announce():
     zc = Zeroconf()
     zc.register_service(info)
     log.info("announced as %r on %s:%d", info.name, _lan_ip(), PORT)
-    return zc, info
+
+    def stop() -> None:
+        zc.unregister_service(info)
+        zc.close()
+
+    return stop
+
+
+def _announce_dns_sd():
+    """On a Mac the system's own mDNS service announces Moo Local. It keeps
+    working when Moo Local is started at login, where macOS may not let a
+    Python program send to the local network by itself."""
+    import subprocess
+
+    host = socket.gethostname().split(".")[0]
+    # dns-sd runs until stopped. The small shell around it stops it as soon as
+    # this process ends, however it ends, by watching the pipe close.
+    proc = subprocess.Popen(
+        ["/bin/sh", "-c", 'dns-sd -R "$1" "$2" local "$3" path=/v1 version=0.1.0 >/dev/null & p=$!; '
+         'trap "kill $p" EXIT; read _', "sh", f"Moo Local on {host}", SERVICE_TYPE.replace(".local.", ""), str(PORT)],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, **_quiet(),
+    )
+    log.info("announced as 'Moo Local on %s' (%s) on port %d", host, SERVICE_TYPE, PORT)
+    return proc.terminate
+
+
+# --- downloads the installer asks for ---------------------------------------
+
+def prepare() -> int:
+    """Downloads the listening models and the voices, so the Moo's screen
+    offers them at once. Each one that fails is reported and skipped."""
+    from huggingface_hub import snapshot_download
+
+    failed = []
+
+    def step(what: str, fn) -> None:
+        print(f"  {what}", flush=True)
+        try:
+            fn()
+        except Exception as exc:
+            failed.append(what)
+            print(f"    did not work: {exc!r}", flush=True)
+
+    for key, repo, _ in LISTEN_MODELS:
+        if key != "whisper-turbo":  # the large one (1.6 GB) only when asked for
+            step(f"listening, {key}", lambda r=repo: snapshot_download(r))
+    if KITTEN2_PYTHON.exists():
+        for _, _, repo in VOICE_QUALITIES["kitten2s"]:
+            step(f"Kitten 2 {repo.rsplit('-', 1)[-1]}", lambda r=repo: (snapshot_download(r), _kitten2_say("Hello.", "Eleanor", r)))
+    if _importable("pocket_tts"):
+        step("Pocket voices", lambda: [_pocket_say("Hello.", v) for v, _ in POCKET_VOICES])
+    if _importable("supertonic"):
+        step("Supertonic voices", lambda: [_supertonic_say("Hello.", v, 3) for v, _ in SUPERTONIC_VOICES])
+    if _kokoro_ready():
+        step("Kokoro", lambda: _get_kokoro().create("Hello.", voice=KOKORO_VOICE, speed=1.0, lang="en-us"))
+    if _piper_voices():
+        step("Piper", lambda: [_get_piper(v) for v in _piper_voices()])
+    if _kitten2 is not None:
+        _kitten2.kill()
+    print("  ready" if not failed else f"  ready, without: {', '.join(failed)}", flush=True)
+    return 0
 
 
 if __name__ == "__main__":
-    zc, info = _announce()
+    if "--prepare" in sys.argv:
+        sys.exit(prepare())
+    threading.Thread(target=_start_ollama, daemon=True).start()
+    stop_announcing = _announce()
     try:
         uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
     finally:
-        zc.unregister_service(info)
-        zc.close()
+        stop_announcing()
