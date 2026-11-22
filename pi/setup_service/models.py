@@ -15,6 +15,9 @@ class StatusResponse(BaseModel):
     device_id: str
     version: str
     uptime_seconds: int
+    # The Moo's address on the home wifi, so a phone that found it over
+    # Bluetooth can reach it there for the AI work.
+    address: Optional[str] = None
 
 
 class WifiNetwork(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import time
 
 from fastapi import APIRouter, HTTPException, Query
@@ -28,7 +29,19 @@ def get_status() -> StatusResponse:
         device_id=cfg.get("device", {}).get("id", _device_id_fallback()),
         version=VERSION,
         uptime_seconds=int(time.monotonic() - _BOOT_TIME),
+        address=_wifi_address() if ssid else None,
     )
+
+
+def _wifi_address() -> str | None:
+    """The Moo's own address on the network, from the route it would use to reach
+    the outside (nothing is sent)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
 
 
 @router.get("/logs", response_model=LogsResponse)
