@@ -10,7 +10,7 @@ import { Linking, Modal, Platform, Pressable, SafeAreaView, ScrollView, Share, S
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import { DEFAULTS, LISTEN_MODELS, PHONE_GB, PHONE_NAME, STORY_MODELS, VOICE_MODELS, fits, load, runJob, unload, voicesOf, type Choice, type Settings } from "./src/ai";
+import { DEFAULTS, LISTEN_MODELS, PHONE_GB, PHONE_NAME, STORY_MODELS, VOICE_MODELS, downloadGB, fits, load, nameOf, runJob, unload, voicesOf, type Choice, type Settings } from "./src/ai";
 import { Kitten2Host } from "./src/kitten2";
 import { bye, lend, report, type Job } from "./src/moo";
 import { connectMoo, findMoos } from "./src/ble";
@@ -34,6 +34,8 @@ const PHASE: Record<string, string> = {
 };
 const ADDRESS_KEY = "moo_address";
 const SETTINGS_KEY = "moo_models";
+// Set once the parent has chosen and installed the models; before that nothing is downloaded.
+const CHOSEN_KEY = "moo_models_chosen";
 type Tab = "story" | "games" | "letters" | "phone";
 type Engine = "off" | "loading" | "ready" | "working" | "error";
 
@@ -52,19 +54,34 @@ function Button({ title, onPress, kind = "main", disabled }: { title: string; on
 function Picker({ title, choices, value, onChange, disabled }: {
   title: string; choices: Choice[]; value: string; onChange: (id: string) => void; disabled?: boolean;
 }) {
+  // Every model is shown. One that does not fit this phone is greyed out and says so when tapped,
+  // so the parent knows it exists and why it cannot be used here.
+  const [tooBig, setTooBig] = useState("");
   return (
     <View style={styles.card}>
       <Text style={styles.h2}>{title}</Text>
-      {choices.filter(fits).map((c) => (
-        <Pressable
-          key={c.id}
-          disabled={disabled}
-          onPress={() => onChange(c.id)}
-          style={[styles.choice, value === c.id && styles.choiceOn, disabled && { opacity: 0.5 }]}
-        >
-          <Text style={[styles.choiceText, value === c.id && styles.choiceTextOn]}>{c.label}</Text>
-        </Pressable>
-      ))}
+      {choices.map((c) => {
+        const ok = fits(c);
+        return (
+          <Pressable
+            key={c.id}
+            disabled={disabled}
+            onPress={() => {
+              if (ok) {
+                setTooBig("");
+                onChange(c.id);
+              } else {
+                setTooBig(`${c.label.split(" — ")[0]} is too big for this phone's ${PHONE_GB.toFixed(0)} GB of memory. Choose a smaller one.`);
+              }
+            }}
+            style={[styles.choice, value === c.id && styles.choiceOn, (disabled || !ok) && { opacity: 0.45 }]}
+          >
+            <Text style={[styles.choiceText, value === c.id && styles.choiceTextOn]}>{c.label}</Text>
+            {!ok && <Text style={styles.small}>Needs a phone with {c.minGB} GB or more</Text>}
+          </Pressable>
+        );
+      })}
+      {!!tooBig && <Text style={styles.warn}>{tooBig}</Text>}
     </View>
   );
 }
@@ -90,6 +107,7 @@ export default function App() {
   const [base, setBase] = useState<string | null>(null); // the Moo that answered
   const [searching, setSearching] = useState(true);
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
+  const [needsChoice, setNeedsChoice] = useState(false);
   const [engine, setEngine] = useState<Engine>("off");
   const [parts, setParts] = useState<Record<string, string>>({});
   const [engineNote, setEngineNote] = useState("");
@@ -115,7 +133,12 @@ export default function App() {
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       setEngine("error");
-      setEngineNote(`Could not load the models: ${msg}`);
+      const memory = /memory|oom|allocat|too large|jetsam/i.test(msg);
+      setEngineNote(
+        memory
+          ? `A model is too big for this phone (${msg}). Choose a smaller story model or voice below, then try again.`
+          : `Could not load the models: ${msg}`
+      );
       report(at, `app error while loading: ${msg.slice(0, 100)}`);
       return false;
     }
@@ -172,7 +195,10 @@ export default function App() {
     }
     setAddress(found);
     AsyncStorage.setItem(ADDRESS_KEY, found).catch(() => {});
-    startEngine(found, s);
+    // The models are downloaded only after the parent has chosen them once.
+    const chosen = (await AsyncStorage.getItem(CHOSEN_KEY).catch(() => null)) === "1";
+    setNeedsChoice(!chosen);
+    if (chosen) startEngine(found, s);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -764,8 +790,33 @@ export default function App() {
     </Modal>
   );
 
+  // Nothing is downloaded until the parent has looked at the models and tapped Install.
+  const installChosen = () => {
+    AsyncStorage.setItem(CHOSEN_KEY, "1").catch(() => {});
+    setNeedsChoice(false);
+    if (base && base !== BLUETOOTH) startEngine(base, settings);
+  };
+  const chooserCard = (
+    <View style={[styles.card, styles.now]}>
+      <Text style={styles.h2}>Choose the models for this phone</Text>
+      <Text style={styles.body}>
+        Nothing is downloaded until you tap Install. The ones that suit this phone{PHONE_GB ? ` (${PHONE_GB.toFixed(0)} GB)` : ""} are already chosen:
+      </Text>
+      <Text style={styles.small}>Story: {nameOf(STORY_MODELS, settings.story)}</Text>
+      <Text style={styles.small}>Listening: {nameOf(LISTEN_MODELS, settings.listen)}</Text>
+      <Text style={styles.small}>Voice: {nameOf(VOICE_MODELS, settings.engine)}, {nameOf(voicesOf(settings.engine), settings.voice)}</Text>
+      <Button title={`Install and start, about ${downloadGB(settings).toFixed(1)} GB`} disabled={!base || base === BLUETOOTH} onPress={installChosen} />
+      {tab !== "phone" ? (
+        <Button title="Change the models" kind="plain" onPress={() => setTab("phone")} />
+      ) : (
+        <Text style={styles.small}>To change them, choose below before you tap Install.</Text>
+      )}
+    </View>
+  );
+
   const phoneScreen = (
     <>
+      {needsChoice && chooserCard}
       <Button title="Set up a Moo, step by step" onPress={openWizard} />
       {devicesCard}
       <View style={[styles.card, styles.now]}>
@@ -829,6 +880,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.scroll}>
         {!!note && <Text style={styles.warn}>{note}</Text>}
         {!!base && (needsWifi || onMooHotspot) && tab !== "phone" && wifiCard}
+        {!!base && needsChoice && tab !== "phone" && chooserCard}
         {tab !== "phone" && tab !== "letters" && !!base && !!needAi && <Text style={styles.small}>{needAi}</Text>}
         {!base && !searching && tab !== "phone" ? (
           <View style={styles.card}>

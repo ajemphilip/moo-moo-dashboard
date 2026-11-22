@@ -116,6 +116,16 @@ export const VOICE_MODELS: (Choice & { config: () => any; voices: Choice[] })[] 
 ];
 
 
+/** About how much each choice downloads, in GB, for the total shown before anything is fetched. */
+const DOWNLOAD_GB: Record<string, number> = {
+  lfm350m: 0.3, lfm1b: 0.8, llama1b: 1.0, qwen3b: 2.0, llama3b: 2.0, gemma4: 3.0, qwen3_4b: 2.5,
+  tiny: 0.15, base: 0.3, small: 1.0,
+  kokoro: 0.35, "kitten2-pico": 0.05, "kitten2-nano": 0.06, "kitten2-mini": 0.12, supertonic: 0.3, reverb: 1.0,
+};
+export const downloadGB = (s: { story: string; listen: string; engine: string }) =>
+  (DOWNLOAD_GB[s.story] ?? 0) + (DOWNLOAD_GB[s.listen] ?? 0) + (DOWNLOAD_GB[s.engine] ?? 0);
+export const nameOf = (list: Choice[], id: string) => (list.find((c) => c.id === id)?.label ?? id).split(" — ")[0];
+
 export const voicesOf = (engine: string): Choice[] =>
   (VOICE_MODELS.find((m) => m.id === engine) ?? VOICE_MODELS[0]).voices;
 
