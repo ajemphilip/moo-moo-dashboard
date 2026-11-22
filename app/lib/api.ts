@@ -322,9 +322,14 @@ export const api = {
   aiDiscover: () => request<{ engines: AiEngine[] }>("/ai/discover"),
   aiTest: () => request<AiTest>("/ai/test", { method: "POST", body: "{}" }),
   engineStatus: () =>
-    request<{ devices: { name: string; jobs_done: number; seconds_since_seen: number }[]; queued: number }>(
-      "/engine/status"
-    ),
+    request<{
+      devices: { name: string; jobs_done: number; seconds_since_seen: number; current?: boolean }[];
+      current?: string | null;
+      queued: number;
+    }>("/engine/status"),
+  // Make a lent phone or computer the current one: it gets the jobs from now on.
+  engineUse: (name: string) =>
+    request<{ current: string }>("/engine/use", { method: "POST", body: JSON.stringify({ name }) }),
 
   // Word games on their own
   gamesStart: (game: GameKind) =>

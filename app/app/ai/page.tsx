@@ -81,7 +81,7 @@ function AiPageInner() {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [options, setOptions] = useState<AiOptions | null>(null);
   const [engines, setEngines] = useState<AiEngine[] | null>(null);
-  const [lent, setLent] = useState<{ name: string; jobs_done: number }[]>([]);
+  const [lent, setLent] = useState<{ name: string; jobs_done: number; current?: boolean }[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<AiTest | null>(null);
@@ -145,8 +145,10 @@ function AiPageInner() {
     stopThisDevice();
     await save({ mode: "local", local_url: e.url, local_name: e.name });
   };
-  const chooseOther = async () => {
-    stopThisDevice();
+  // Another lent phone or computer becomes the current one; this browser stops lending.
+  const chooseOther = async (name: string) => {
+    if (name !== deviceName()) stopThisDevice();
+    await api.engineUse(name).catch(() => {});
     await save({ mode: "browser" });
   };
   async function chooseThisDevice() {
@@ -156,6 +158,7 @@ function AiPageInner() {
     }
     clearCrash();
     setCrashed(null);
+    await api.engineUse(deviceName()).catch(() => {});
     const s = await save({ mode: "browser" });
     startThisDevice(deviceName(), (s?.browser_quality as Quality) ?? "auto");
   }
@@ -205,8 +208,8 @@ function AiPageInner() {
         ? settings?.local_name ?? "a local machine"
         : thisDevice
           ? `this device (${deviceName()})`
-          : lent.length
-            ? `${lent.map((d) => d.name).join(", ")}, lent from its browser`
+          : lent.find((d) => d.current)
+            ? `${lent.find((d) => d.current)!.name}, a lent phone or computer`
             : "a lent device, but none is lending right now";
   const voiceEngineId = settings?.voice_engine ?? "kokoro";
   const inUse: { what: string; value: string }[] =
@@ -345,22 +348,30 @@ function AiPageInner() {
             </div>
           </button>
         ))}
-        {lent.map((d) => (
-          <button
-            key={`lent-${d.name}`}
-            type="button"
-            disabled={busy}
-            onClick={chooseOther}
-            className={`rounded-moo border px-3 py-2 text-left disabled:opacity-50 ${
-              mode === "browser" && !thisDevice ? "bg-moo-accent text-white border-moo-accent" : "bg-white border-moo-ink/20"
-            }`}
-          >
-            <div className="font-medium">{d.name}</div>
-            <div className="text-xs opacity-70">
-              Lent from its browser · {d.jobs_done} jobs done{mode === "browser" && !thisDevice ? " · in use" : ""}
-            </div>
-          </button>
-        ))}
+        {/* Phones and computers that are lending: the current one first and
+            marked, the others one tap away. This browser itself is "This device". */}
+        {lent
+          .filter((d) => !(thisDevice && d.name === deviceName()))
+          .map((d) => {
+            const current = mode === "browser" && !thisDevice && !!d.current;
+            return (
+              <button
+                key={`lent-${d.name}`}
+                type="button"
+                disabled={busy || current}
+                onClick={() => chooseOther(d.name)}
+                className={`rounded-moo border px-3 py-2 text-left disabled:opacity-100 ${
+                  current ? "bg-moo-accent text-white border-moo-accent" : "bg-white border-moo-ink/20"
+                }`}
+              >
+                <div className="font-medium">{d.name}</div>
+                <div className="text-xs opacity-70">
+                  {/app\b/.test(d.name) ? "The Moo app" : "Lent from its browser"} · {d.jobs_done} jobs done
+                  {current ? " · in use now" : " · tap to use"}
+                </div>
+              </button>
+            );
+          })}
         <Button variant="secondary" onClick={() => router.push("/ai/setup")}>
           Set up a local machine
         </Button>

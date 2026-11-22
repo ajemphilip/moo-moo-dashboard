@@ -29,6 +29,8 @@ from collections import deque
 
 from fastapi import APIRouter, HTTPException
 
+import config as moo_config
+
 from ..models import EngineHello, EngineResult, EngineSubmit
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,32 @@ _ids = itertools.count(1)
 def _alive() -> list[dict]:
     now = time.monotonic()
     return [e for e in _engines.values() if now - e["last_seen"] < ENGINE_STALE_SECONDS]
+
+
+# --- the current device -----------------------------------------------------
+# Several phones and computers may be lent at once. One of them is the current
+# device and gets every job; the others wait until they are chosen. The choice
+# is kept by name in the configuration (ai.lent_device), so it outlasts a
+# reconnect, which gives a device a new engine_id.
+
+def _current_name() -> str | None:
+    try:
+        return ((moo_config.load_config().get("ai") or {}).get("lent_device")) or None
+    except Exception:
+        return None
+
+
+def _set_current(name: str) -> None:
+    moo_config.update_config({"ai": {"lent_device": name}})
+
+
+def _takes_jobs(eng: dict) -> bool:
+    """The current device takes the jobs. If it is not lending right now, any
+    lent device may, so a story never waits on a phone that was put away."""
+    current = _current_name()
+    if not current or eng["name"] == current:
+        return True
+    return not any(e["name"] == current for e in _alive())
 
 
 def engine_available() -> bool:
@@ -84,12 +112,43 @@ def submit(kind: str, payload: dict, timeout: float = 120.0) -> dict:
 def hello(req: EngineHello) -> dict:
     engine_id = uuid.uuid4().hex[:12]
     with _cond:
+        # The same device saying hello again (the app was reopened, the page
+        # reloaded) replaces its old entry at once. Left in place, the old one
+        # counted as lent for 40 seconds and a story's first job went to it and
+        # was never answered (21 November 2026).
+        for old in [k for k, e in _engines.items() if e["name"] == req.name]:
+            del _engines[old]
         _engines[engine_id] = {
             "id": engine_id, "name": req.name, "device": req.device,
             "last_seen": time.monotonic(), "jobs_done": 0,
         }
+        _cond.notify_all()
+    if not _current_name():
+        _set_current(req.name)  # the first device lent becomes the current one
     logger.info("device lent to Moo: %s (%s)", req.name, req.device)
     return {"engine_id": engine_id}
+
+
+@router.post("/use")
+def use(body: dict) -> dict:
+    """Make a lent device the current one: it gets the jobs from now on."""
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Which device?")
+    _set_current(name)
+    with _cond:
+        _cond.notify_all()
+    logger.info("current lent device: %s", name)
+    return {"current": name}
+
+
+@router.post("/bye")
+def bye(body: dict) -> dict:
+    """A device stops lending: it leaves the list at once."""
+    with _cond:
+        _engines.pop(str(body.get("engine_id") or ""), None)
+        _cond.notify_all()
+    return {"ok": True}
 
 
 @router.get("/next")
@@ -101,7 +160,9 @@ def next_job(engine_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Unknown device, say hello again")
         while True:
             eng["last_seen"] = time.monotonic()
-            if _queue:
+            if _engines.get(engine_id) is not eng:
+                raise HTTPException(status_code=404, detail="Replaced by a newer hello")
+            if _queue and _takes_jobs(eng):
                 job = _queue.popleft()
                 eng["busy_since"] = time.monotonic()
                 return {"job": {"id": job["id"], "kind": job["kind"], "payload": job["payload"]}}
@@ -133,14 +194,19 @@ def report(body: dict) -> dict:
 
 @router.get("/status")
 def status() -> dict:
+    current = _current_name()
     with _cond:
         now = time.monotonic()
+        alive = _alive()
+        working = next((e["name"] for e in alive if _takes_jobs(e)), None)
         return {
             "devices": [
                 {"name": e["name"], "device": e["device"], "jobs_done": e["jobs_done"],
-                 "seconds_since_seen": round(now - e["last_seen"], 1)}
-                for e in _alive()
+                 "seconds_since_seen": round(now - e["last_seen"], 1),
+                 "current": e["name"] == working}
+                for e in sorted(alive, key=lambda e: e["name"] != working)
             ],
+            "current": current,  # the device chosen, lending or not
             "queued": len(_queue),
         }
 

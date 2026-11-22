@@ -505,6 +505,9 @@ export interface LoopEvents {
   onError: (message: string) => void;
 }
 
+// The id the Moo gave this browser, so that stopping can say goodbye at once.
+let lentId = "";
+
 export async function lend(name: string, device: string, stop: () => boolean, ev: LoopEvents) {
   let engineId = "";
   const hello = async () => {
@@ -514,6 +517,7 @@ export async function lend(name: string, device: string, stop: () => boolean, ev
       body: JSON.stringify({ name, device }),
     });
     engineId = (await r.json()).engine_id;
+    lentId = engineId;
   };
   await hello();
   while (!stop()) {
@@ -685,6 +689,11 @@ export function stopThisDevice() {
     /* ignore */
   }
   stopFlag = true;
+  // Leave the Moo's list of lent devices now, not 40 seconds from now.
+  if (lentId) {
+    fetch("/engine/bye", { method: "POST", headers: HEADERS, body: JSON.stringify({ engine_id: lentId }), keepalive: true }).catch(() => {});
+    lentId = "";
+  }
   wake?.release?.().catch(() => {});
   update({ status: "off", current: null });
 }
