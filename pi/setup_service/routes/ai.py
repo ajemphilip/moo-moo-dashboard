@@ -241,7 +241,9 @@ def options() -> dict:
     url = local_url(cfg) or ""
     base = url[: -len("/v1")] if url.endswith("/v1") else url
     try:
-        with urllib.request.urlopen(f"{base}/moo/options", timeout=5) as r:
+        # 15 s: an older Moo Local on Windows took more than 5 s to answer, and its settings card,
+        # with the model list, then disappeared from the AI engine screen (22 November 2026).
+        with urllib.request.urlopen(f"{base}/moo/options", timeout=15) as r:
             data = json.loads(r.read())
     except Exception:
         data = {"story_models": [], "voice_engines": [], "voices": [], "unreachable": True}

@@ -461,9 +461,10 @@ function AiPageInner() {
         )}
         <div className="flex flex-col gap-2 mt-1">
           {myMooLocal ? (
-            <Button onClick={() => chooseComputer(myMooLocal.engine!)} disabled={busy || myMooLocal.current}>
-              {myMooLocal.current ? "This computer's Moo Local is in use" : "Use Moo Local on this computer"}
-            </Button>
+            // The banner above offers it when it is not in use; here only say that it is.
+            myMooLocal.current ? (
+              <Button onClick={() => {}} disabled>This computer&apos;s Moo Local is in use</Button>
+            ) : null
           ) : (
             <Button onClick={chooseThisDevice} disabled={busy || thisDevice}>
               {thisDevice ? "This device is set up" : "Set up this device"}
