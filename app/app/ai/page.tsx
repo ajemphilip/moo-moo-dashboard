@@ -549,7 +549,7 @@ function AiPageInner() {
               </p>
             </>
           )}
-          {options.mode === "local" && <MooLocalModels onChanged={refreshOptions} />}
+          {options.mode === "local" && <MooLocalModels settings={settings} onChanged={refreshOptions} onChosen={save} />}
           {options.mode === "local" && options.tiers && options.tiers.length > 0 && (
             <Select
               label="Speed and quality"
@@ -561,22 +561,7 @@ function AiPageInner() {
               }}
             />
           )}
-          {options.mode === "local" && options.story_models && options.story_models.length > 0 && (
-            <Select
-              label="Story model"
-              value={settings?.story_model ?? options.default_story_model ?? options.story_models[0].id}
-              choices={options.story_models}
-              onChange={(v) => save({ tier: "custom", story_model: v })}
-            />
-          )}
-          {options.mode === "local" && options.listen_models && options.listen_models.length > 0 && (
-            <Select
-              label="Listening model"
-              value={settings?.listen_model ?? options.default_listen_model ?? options.listen_models[0].id}
-              choices={options.listen_models}
-              onChange={(v) => save({ tier: "custom", listen_model: v })}
-            />
-          )}
+          {/* A local machine's story and listening models are chosen in the Models dropdowns above. */}
           {options.mode === "cloud" && options.story_models && (
             <Select
               label="Story model"
@@ -587,7 +572,7 @@ function AiPageInner() {
           )}
           {options.voice_engines && options.voice_engines.length > 1 && (
             <Select
-              label="Voice model"
+              label={options.mode === "local" ? "Voice in use" : "Voice model"}
               value={
                 (options.mode === "cloud" ? settings?.cloud_voice_model : settings?.voice_engine) ??
                 options.voice_engines[0].id

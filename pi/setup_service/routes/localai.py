@@ -161,7 +161,10 @@ def models_job() -> dict:
 
 @router.post("/models/install")
 def models_install(body: dict) -> dict:
-    return _relay("/moo/models/install", {"id": str(body.get("id") or "")})
+    return _relay("/moo/models/install", {
+        "id": str(body.get("id") or ""),
+        "replace": [str(x) for x in (body.get("replace") or [])],
+    })
 
 
 @router.post("/models/remove")

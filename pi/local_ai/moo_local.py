@@ -351,6 +351,10 @@ async def speech(request: Request) -> Response:
         engine = "kokoro"
     if engine == "mac" and not APPLE:
         engine = "kokoro"
+    if engine not in ("mac", "chatterbox") and not _engine_ready(engine):
+        ready = [e for e in _ENGINE_ORDER if _engine_ready(e)]
+        if ready:  # the chosen voice model was replaced by another; speak with that one
+            engine, voice_id, quality = ready[0], "", None
     if engine in ("orpheus", "qwen3", "kitten2") and not APPLE:
         engine = "kitten2s" if _kitten2s_ready() else "kokoro"
         voice_id = ""
@@ -461,6 +465,17 @@ KOKORO_VOICES = [
     ("bm_george", "George — British storyteller"),
 ]
 
+
+
+_ENGINE_ORDER = ["kitten2s", "kokoro", "pocket", "supertonic", "piper", "qwen3", "kitten2", "orpheus"]
+
+
+def _engine_ready(engine: str) -> bool:
+    return {
+        "kitten2s": _kitten2s_ready, "kokoro": _kokoro_ready, "pocket": _pocket_ready,
+        "supertonic": _supertonic_ready, "piper": lambda: bool(_piper_voices()),
+        "qwen3": _qwen3_ready, "kitten2": _kitten2_ready, "orpheus": _orpheus_ready,
+    }.get(engine, _kokoro_ready)()
 
 
 def _quiet() -> dict:
@@ -1179,13 +1194,61 @@ def _install(it: dict) -> None:
 
             snapshot_download(it["repo"])
         _ready_cache.clear()
-        _job.update(status="done", done_mb=_job.get("total_mb", it["size_mb"]), message=f"{it['label'].split(' — ')[0]} is installed.")
-        log.info("installed %s", it["id"])
+        name = it["label"].split(" — ")[0]
+        _job.update(phase="checking", message=f"Checking that {name} works on this computer")
+        try:
+            _check_loads(it)
+        except Exception as exc:
+            # It does not run here: take it away again and keep what was there.
+            log.warning("%s installed but does not load", it["id"], exc_info=True)
+            try:
+                _remove(it)
+            except Exception:
+                pass
+            _job.update(status="error", message=f"{name} was downloaded but does not run on this computer ({exc}). "
+                                                "The model you had is kept. Choose a smaller one.")
+            return
+        replaced = []
+        for old in _job.get("replace") or []:
+            if old != it["id"]:
+                try:
+                    _remove(_item(old))
+                    replaced.append(_item(old)["label"].split(" — ")[0])
+                except Exception:
+                    log.warning("removing %s after installing %s failed", old, it["id"], exc_info=True)
+        _job.update(status="done", done_mb=_job.get("total_mb", it["size_mb"]),
+                    message=f"{name} is installed" + (f" in place of {', '.join(replaced)}." if replaced else "."))
+        log.info("installed %s, replaced %s", it["id"], replaced)
     except Exception as exc:
         log.warning("installing %s failed", it["id"], exc_info=True)
         _job.update(status="error", message=f"{it['label'].split(' — ')[0]} could not be installed: {exc}")
     finally:
         stop.set()
+
+
+def _check_loads(it: dict) -> None:
+    """Loads a newly installed model once and makes a few words with it."""
+    family, vid = it["family"], it["id"].split(":", 1)[1]
+    if it["kind"] == "story":
+        r = httpx.post(f"{OLLAMA}/api/generate", timeout=600, json={
+            "model": vid, "prompt": "Say hello.", "stream": False, "options": {"num_predict": 5}})
+        if r.status_code != 200:
+            raise RuntimeError(r.json().get("error") if r.headers.get("content-type", "").startswith("application/json") else r.text[:200])
+        return
+    if it["kind"] == "listen":
+        with _whisper_lock:
+            _transcribe(np.zeros(16000, dtype=np.float32), it["repo"], None)
+        return
+    with _voice_lock:
+        if family == "kokoro":
+            _get_kokoro().create("Hello.", voice=KOKORO_VOICE, speed=1.0, lang="en-us")
+        elif family == "piper":
+            _get_piper(vid)
+        elif family in ("kitten2s", "kitten2"):
+            _kitten2_say("Hello.", "Eleanor" if family == "kitten2s" else KITTEN2_VOICES[0][0], it["repo"])
+        elif family in ("qwen3", "orpheus"):
+            _orpheus_say("Hello.", "", family, it["repo"])
+        # Pocket and Supertonic already spoke while they were installed.
 
 
 def _remove(it: dict) -> None:
@@ -1253,7 +1316,9 @@ def models_job() -> dict:
 
 @app.post("/moo/models/install")
 async def models_install(request: Request) -> dict:
-    model_id = str((await request.json()).get("id") or "")
+    body = await request.json()
+    model_id = str(body.get("id") or "")
+    replace = [str(x) for x in (body.get("replace") or []) if str(x) != model_id]
     it = _item(model_id)
     reason = _too_big(it)
     if reason:
@@ -1268,8 +1333,8 @@ async def models_install(request: Request) -> dict:
         if _job.get("status") == "running":
             raise MooError(409, f"Wait until {_job.get('label')} has finished installing.")
         _job.clear()
-        _job.update(id=it["id"], label=it["label"].split(" — ")[0], status="running",
-                    done_mb=0, total_mb=it["size_mb"], message="")
+        _job.update(id=it["id"], kind=it["kind"], label=it["label"].split(" — ")[0], status="running",
+                    phase="downloading", done_mb=0, total_mb=it["size_mb"], message="", replace=replace)
     threading.Thread(target=_install, args=(it,), daemon=True).start()
     return {"job": dict(_job)}
 

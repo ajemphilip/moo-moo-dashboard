@@ -393,6 +393,8 @@ export interface LocalModel {
 
 export interface LocalModelJob {
   id: string;
+  kind?: "story" | "listen" | "voice";
+  phase?: "downloading" | "checking";
   label: string;
   status: "running" | "done" | "error";
   done_mb: number;
@@ -413,8 +415,9 @@ export interface LocalModels {
 export const localModelsApi = {
   list: () => request<LocalModels>("/local-ai/models"),
   job: () => request<{ job: LocalModelJob | null }>("/local-ai/models/job"),
-  install: (id: string) =>
-    request<{ job: LocalModelJob }>("/local-ai/models/install", { method: "POST", body: JSON.stringify({ id }) }),
+  // `replace`: the models of the same kind to remove once the new one runs.
+  install: (id: string, replace: string[] = []) =>
+    request<{ job: LocalModelJob }>("/local-ai/models/install", { method: "POST", body: JSON.stringify({ id, replace }) }),
   remove: (id: string) =>
     request<{ removed: string }>("/local-ai/models/remove", { method: "POST", body: JSON.stringify({ id }) }),
 };
