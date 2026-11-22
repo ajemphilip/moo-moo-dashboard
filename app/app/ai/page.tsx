@@ -115,7 +115,11 @@ function AiPageInner() {
   useEffect(() => subscribe(setEngine), []);
   useEffect(() => {
     api.aiGet().then(setSettings).catch((e) => setError(errMsg(e)));
-    api.aiDiscover().then((r) => setEngines(r.engines)).catch(() => setEngines([]));
+    // Computers are looked for again every 20 s: a Moo Local installed while this page is open, or one
+    // that was slow to answer, shows up without reloading (22 November 2026).
+    const look = () => api.aiDiscover().then((r) => setEngines(r.engines)).catch(() => setEngines((e) => e ?? []));
+    look();
+    const lookId = setInterval(look, 20000);
     refreshOptions();
     const tick = () =>
       api.engineStatus().then((s) => {
@@ -125,7 +129,10 @@ function AiPageInner() {
     tick();
     api.engineWhoami().then((r) => setMyIp(r.ip)).catch(() => {});
     const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      clearInterval(lookId);
+    };
   }, []);
 
   useEffect(() => {
@@ -294,6 +301,16 @@ function AiPageInner() {
   devices.sort((a, b) => Number(b.current) - Number(a.current) || Number(b.on) - Number(a.on));
   // Set up this device knows where it is: a computer that runs Moo Local uses it, anything else the browser.
   const myMooLocal = ways.find((w) => w.kind === "computer" && w.on && !!myIp && w.ip === myIp);
+  // Moo Local is better than this browser on the same computer. Once it is installed and has its models,
+  // the work moves to it by itself if this browser was doing it; without models the parent is told.
+  const [autoMoved, setAutoMoved] = useState(false);
+  useEffect(() => {
+    if (!autoMoved && myMooLocal?.ready && thisDevice && !busy) {
+      setAutoMoved(true);
+      chooseComputer(myMooLocal.engine!);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myMooLocal?.ready, thisDevice]);
   const choice: Choice | null =
     mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : lent.length ? "computer" : null) : null;
 
@@ -429,6 +446,19 @@ function AiPageInner() {
           </div>
         ))}
         {engines === null && <Spinner label="Looking for computers…" />}
+        {myMooLocal && !myMooLocal.current && (
+          <div className="rounded-moo border-2 border-moo-accent/50 px-3 py-2 text-sm flex flex-col gap-2">
+            <span>
+              <b>Moo Local is installed on this computer.</b>{" "}
+              {myMooLocal.ready
+                ? "It does better stories and voices than this browser."
+                : "It has no models yet: use it, then choose its story, listening and voice models in its settings below."}
+            </span>
+            <Button onClick={() => chooseComputer(myMooLocal.engine!)} disabled={busy}>
+              Use Moo Local on this computer
+            </Button>
+          </div>
+        )}
         <div className="flex flex-col gap-2 mt-1">
           {myMooLocal ? (
             <Button onClick={() => chooseComputer(myMooLocal.engine!)} disabled={busy || myMooLocal.current}>
