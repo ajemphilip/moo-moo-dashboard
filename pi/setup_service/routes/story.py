@@ -82,38 +82,43 @@ def _snapshot() -> StoryState:
         return StoryState(**_state)
 
 
+# Answers that carry no idea. Anything else the child says is used as it is.
+_FILLER = {
+    "yes", "yeah", "yep", "yup", "no", "nope", "ok", "okay", "sure", "please", "yes please",
+    "uh huh", "mhm", "alright", "um", "uh", "hmm", "er", "ah", "oh", "i don't know",
+    "i dont know", "dunno", "nothing", "you choose", "anything",
+}
+
+
+def _no_idea(text: str) -> bool:
+    words = " ".join(re.findall(r"[a-z']+", text.lower()))
+    return not words or words in _FILLER
+
+
 def _listen(question: str) -> str:
-    """Record the child's answer and make sure Moo can use it.
+    """Record the child's idea for the story.
 
-    The answer is checked against the question. If it fits, Moo goes on
-    without repeating it (the end chime tells the child they were heard). If it
-    does not fit (silence, filler, cut off, off topic or unsafe), Moo asks
-    once more in simpler words and listens again. The second answer is used
-    as it is, so the story never gets stuck.
+    The child's words are used as they are. Gemma 3 1B, asked whether an
+    answer fits, turned down "I wanna hear the story about medals" and let
+    "Yes." through (22 November 2026), so Moo no longer asks a model. An
+    answer with no idea in it (silence, "um", "yes") gets one simpler question;
+    if that brings no idea either, Moo picks the theme. Safety is kept by the
+    check of every story part before it is read.
     """
-    from assistant.story import check_answer
-
     answer = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
-    if _stop.is_set():
-        return answer
-    fits, reply = check_answer(_client, question, answer, _age_range)
-    logger.info("answer check: %r fits=%s", answer, fits)
-    if fits:
-        # No spoken repeat of the child's words. The falling chime at the end
-        # of the recording already tells the child Moo heard them.
+    logger.info("story idea: %r", answer)
+    if _stop.is_set() or not _no_idea(answer):
         return answer
 
-    again = reply or question
+    again = "Tell me what the story should be about. A dragon, a castle, or anything you like!"
     _set(phase="quiz", message=again)
     _audio.speak(again)
     if _stop.is_set():
-        return answer
+        return ""
     _set(phase="listening", message=again)
     second = (_audio.transcribe(_audio.record_until_silence()) or "").strip()
-    logger.info("answer retry: %r", second)
-    if not second:
-        return answer
-    return second
+    logger.info("story idea, asked again: %r", second)
+    return "" if _no_idea(second) else second
 
 
 def _tell(part_text: str) -> str:
@@ -181,8 +186,6 @@ def _wants_end(heard: str) -> bool:
 def _ask_next() -> str | None:
     """Ask what happens next. Returns the child's idea, or None to end."""
     global _steer_question, _steer_answer
-    from assistant.story import check_answer, generate_line
-
     # A fixed, short question every round. A generated one ran on into more
     # story ("She was bursting with ideas! What fun surprise...") and changed
     # every time; the same words each round are easier for a child to learn.
@@ -198,18 +201,16 @@ def _ask_next() -> str | None:
         logger.info("next idea: %r", heard)
         if _wants_end(heard):
             return None
-        if not heard:
-            question = "I didn't hear you. What should happen next? Or say the end."
-            continue
-        fits, reply = check_answer(_client, question, heard, _age_range)
-        logger.info("answer check: %r fits=%s", heard, fits)
-        if fits:
+        if not _no_idea(heard):
+            # Used as the child said it; the part written from it is checked
+            # for safety before Moo reads it.
             _steer_question, _steer_answer = question, heard
             return heard
-        question = reply or question
+        question = "I didn't hear an idea. What should happen next? Or say the end."
     if heard:
-        _steer_question, _steer_answer = question, heard
-        return heard
+        # Two answers with no idea in them: the story goes on by itself.
+        _steer_question, _steer_answer = "", ""
+        return ""
     return None
 
 

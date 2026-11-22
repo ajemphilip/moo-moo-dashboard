@@ -176,7 +176,7 @@ def generate_line(client, kind: str, age_range: str | None = None, **ctx) -> str
 _INTRO_HINT = re.compile(r"\b(hello|hi|hey|here is|here's|story|tale|once more|let's begin)\b", re.I)
 
 
-def clean_part(text: str) -> str:
+def clean_part(text: str, max_sentences: int | None = None) -> str:
     """Make a story part read as story only.
 
     Smaller and local models sometimes add a greeting before the story
@@ -197,7 +197,19 @@ def clean_part(text: str) -> str:
     kept = [x for x in sentences if not x.rstrip().rstrip("\"'”’)").endswith("?")]
     if not kept:  # never return nothing
         kept = sentences[:1]
-    return " ".join(kept).strip()
+    # Moo ends the story itself, when the child says so. Gemma 3 1B closed a
+    # middle part with "The end" and Moo then asked what happens next
+    # (22 November 2026).
+    out = " ".join(kept).strip()
+    out = re.sub(r"[\s.!,]*\bthe\s+end\b[\s.!]*$", "", out, flags=re.I).strip()
+    if out and out[-1] not in ".!?\"'”’":
+        out += "."
+    if max_sentences:
+        # Asked for 3 or 4 sentences, the same model wrote 11, which took
+        # almost a minute on a small laptop and wandered off the story.
+        parts = re.split(r"(?:(?<=[.!?])|(?<=[.!?][\"'”’]))\s+", out)
+        out = " ".join(parts[:max_sentences]).strip()
+    return out or " ".join(sentences[:1]).strip()
 
 
 def generate_story(client, theme: str, age_range: str | None) -> str:
@@ -226,6 +238,21 @@ def generate_story(client, theme: str, age_range: str | None) -> str:
 
     logger.warning("All moderation retries exhausted; using fallback story")
     return SAFE_FALLBACK_STORY
+
+
+def _norm(sentence: str) -> str:
+    return " ".join(re.findall(r"[a-z']+", sentence.lower()))
+
+
+def _drop_repeats(part: str, story_so_far: str) -> str:
+    """Remove sentences of a new part that the story already has.
+
+    Gemma 3 1B began its second part with the whole first part, word for word,
+    and added two sentences (22 November 2026). Moo would have read it again.
+    """
+    told = {_norm(x) for x in re.split(r"(?<=[.!?])\s+", story_so_far) if _norm(x)}
+    kept = [x for x in re.split(r"(?<=[.!?])\s+", part) if _norm(x) and _norm(x) not in told]
+    return " ".join(kept).strip()
 
 
 def extend_story(
@@ -274,7 +301,10 @@ def extend_story(
             ],
             max_tokens=160,
         )
-        extension = clean_part(resp.choices[0].message.content or "")
+        extension = _drop_repeats(
+            clean_part(resp.choices[0].message.content or "", max_sentences=None), story_so_far
+        )
+        extension = clean_part(extension, max_sentences=5) if extension else ""
         if extension and _is_safe(client, extension):
             return extension
 
