@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Moo AI",
-    "slug": "moo-phone-app",
+    "name": "Moo",
+    "slug": "moo",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,7 +20,6 @@
         "UIBackgroundModes": []
       }
     },
-    "newArchEnabled": true,
     "plugins": [
       "react-native-blob-util",
       [
@@ -28,9 +27,27 @@
         {
           "ios": {
             "deploymentTarget": "17.0"
+          },
+          "android": {
+            "usesCleartextTraffic": true,
+            "minSdkVersion": 26
           }
         }
       ]
-    ]
+    ],
+    "android": {
+      "package": "ca.moomoo.phoneai",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "WAKE_LOCK"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d30f2696-7bd0-4068-b210-68a692fdef04"
+      }
+    },
+    "owner": "philipn1s-team"
   }
 }

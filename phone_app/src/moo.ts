@@ -28,8 +28,18 @@ export function report(base: string, stage: string) {
   fetch(`${base}/engine/report`, {
     method: "POST",
     headers: HEADERS,
-    body: JSON.stringify({ device: "Moo app on iPhone", stage }),
+    body: JSON.stringify({ device: "Moo app", stage }),
   }).catch(() => {});
+}
+
+let lentId = "";
+let lentBase = "";
+
+/** Leave the Moo's list of lent devices at once. */
+export function bye() {
+  if (!lentId) return;
+  fetch(`${lentBase}/engine/bye`, { method: "POST", headers: HEADERS, body: JSON.stringify({ engine_id: lentId }) }).catch(() => {});
+  lentId = "";
 }
 
 /** Works for the Moo at `base` until `stop()` says true. */
@@ -48,6 +58,8 @@ export async function lend(
       body: JSON.stringify({ name, device: "Moo app (React Native)" }),
     });
     engineId = (await r.json()).engine_id;
+    lentId = engineId;
+    lentBase = base;
   };
   while (!stop()) {
     let job: Job | null = null;
