@@ -84,13 +84,44 @@ _voice_lock = threading.Lock()
 _chat_model: str | None = None
 
 
-async def _installed() -> list[str]:
+# Ollama's list of story models, kept for a few seconds. On Windows a call to
+# a port where nothing listens takes about two seconds to fail, so asking
+# Ollama on every request made /health slow enough for the Moo to give up.
+_tags: dict = {"t": 0.0, "names": [], "refreshing": False, "up": False}
+
+
+async def _installed(max_age: float = 3.0) -> list[str]:
+    if time.time() - _tags["t"] < max_age:
+        return list(_tags["names"])
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=1.0)) as client:
             tags = (await client.get(f"{OLLAMA}/api/tags")).json()
-        return [m.get("name") for m in tags.get("models", []) if m.get("name")]
+        names = [m.get("name") for m in tags.get("models", []) if m.get("name")]
+        up = True
     except Exception:
-        return []
+        names, up = [], False
+    _tags.update(t=time.time(), names=names, up=up)
+    return list(names)
+
+
+def _installed_now() -> list[str]:
+    """The last known list, at once; a stale one is refreshed in the background."""
+    if time.time() - _tags["t"] > 3.0 and not _tags["refreshing"]:
+        import asyncio
+
+        async def refresh() -> None:
+            try:
+                await _installed()
+            finally:
+                _tags["refreshing"] = False
+
+        _tags["refreshing"] = True
+        asyncio.get_event_loop().create_task(refresh())
+    return list(_tags["names"])
+
+
+def _forget_tags() -> None:
+    _tags["t"] = 0.0
 
 
 async def _model(requested: str | None = None) -> str:
@@ -1200,6 +1231,7 @@ def _install(it: dict) -> None:
 
             snapshot_download(it["repo"])
         _ready_cache.clear()
+        _forget_tags()
         name = it["label"].split(" — ")[0]
         _job.update(phase="checking", message=f"Checking that {name} works on this computer")
         try:
@@ -1265,6 +1297,7 @@ def _remove(it: dict) -> None:
     if it.get("builtin"):
         return  # part of the computer, nothing to delete
     if it["kind"] == "story":
+        _forget_tags()
         r = httpx.request("DELETE", f"{OLLAMA}/api/delete", json={"model": vid}, timeout=30)
         if r.status_code == 404:
             httpx.request("DELETE", f"{OLLAMA}/api/delete", json={"model": f"{vid}:latest"}, timeout=30)
@@ -1311,7 +1344,7 @@ async def models() -> dict:
         "memory_mb": _memory_mb(),
         "usable_mb": _usable_mb(),
         "disk_free_mb": _disk_free_mb(),
-        "ollama": bool(await _installed()) or _ollama_up(),
+        "ollama": bool(await _installed()) or _tags["up"],
         "models": items,
         "job": dict(_job) or None,
     }
@@ -1335,7 +1368,9 @@ async def models_install(request: Request) -> dict:
         raise MooError(507, f"Not enough free space: {it['label'].split(' — ')[0]} needs about "
                             f"{(it['size_mb'] + 1024) / 1024:.1f} GB and this computer has "
                             f"{_disk_free_mb() / 1024:.1f} GB free.")
-    if it["kind"] == "story" and not _ollama_up():
+    if it["kind"] == "story":
+        await _installed(0)  # ask Ollama now, not the list of a few seconds ago
+    if it["kind"] == "story" and not _tags["up"]:
         raise MooError(503, "Ollama is not running on this computer, so story models cannot be installed.")
     with _job_lock:
         if _job.get("status") == "running":
@@ -1364,18 +1399,22 @@ async def models_remove(request: Request) -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    names = await _installed()
-    ollama_ok = bool(names) and (await _model()) in names
+    """Answers at once: the Moo checks every computer with a short time limit."""
+    names = _installed_now()
+    story = _chat_model if _chat_model in names else next(
+        (n for n in (CHAT_MODEL, *reversed([x for x, _ in _STORY_ORDER])) if n in names or f"{n}:latest" in names), None)
+    listen = next((r for _, r, _ in reversed(LISTEN_MODELS) if _cached(r)), None)
+    voice = next((e for e in _ENGINE_ORDER if _engine_ready(e)), None)
     return {
         "service": "moo-local",
         "version": "0.1.0",
         "computer": socket.gethostname(),
         "system": f"{platform.system()} {platform.machine()}",
-        "story_model": _chat_model or CHAT_MODEL,
-        "story_model_ready": ollama_ok,
-        "speech_model": _listen_repo("whisper-1"),
-        "voice": f"kokoro {KOKORO_VOICE}" if _kokoro_ready() else VOICE_PATH.stem,
-        "voice_ready": _kokoro_ready() or VOICE_PATH.exists(),
+        "story_model": story,
+        "story_model_ready": story is not None,
+        "speech_model": listen,
+        "voice": voice,
+        "voice_ready": voice is not None,
     }
 
 
