@@ -26,7 +26,7 @@ _lock = threading.Lock()
 _last_write: dict[str, float] = {}
 
 
-def remember(name: str, kind: str, *, url: str | None = None, device: str | None = None, force: bool = False) -> None:
+def remember(name: str, kind: str, *, url: str | None = None, device: str | None = None, ip: str | None = None, force: bool = False) -> None:
     """Note that a device was seen now. `kind` is "lent" or "computer"."""
     name = (name or "").strip()
     if not name:
@@ -35,6 +35,8 @@ def remember(name: str, kind: str, *, url: str | None = None, device: str | None
     with _lock:
         if not force and now - _last_write.get(name, 0.0) < WRITE_EVERY:
             return
+        if url and not ip:
+            ip = url.split("//")[-1].split(":")[0].split("/")[0]
         _last_write[name] = now
         cfg = moo_config.load_config()
         known = dict(cfg.get(KEY) or {})
@@ -46,6 +48,8 @@ def remember(name: str, kind: str, *, url: str | None = None, device: str | None
             entry["url"] = url.rstrip("/")
         if device:
             entry["device"] = device[:120]
+        if ip:
+            entry["ip"] = ip  # the machine on the home network, so its ways in show as one device
         known[name] = entry
         cfg[KEY] = known
         moo_config.save_config(cfg)

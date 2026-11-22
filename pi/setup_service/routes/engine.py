@@ -27,7 +27,7 @@ import time
 import uuid
 from collections import deque
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 import config as moo_config
 
@@ -109,9 +109,23 @@ def submit(kind: str, payload: dict, timeout: float = 120.0) -> dict:
     return res.get("result") or {}
 
 
+def _client_ip(request: Request) -> str | None:
+    """The address a request came from on the home network. Requests passed on by the
+    Bluetooth bridge come from the Moo itself and say nothing about the device."""
+    ip = request.client.host if request.client else None
+    return None if not ip or ip.startswith("127.") or ip == "::1" else ip
+
+
+@router.get("/whoami")
+def whoami(request: Request) -> dict:
+    """The asking device's own address, so a page can find itself in the device list."""
+    return {"ip": _client_ip(request)}
+
+
 @router.post("/hello")
-def hello(req: EngineHello) -> dict:
+def hello(req: EngineHello, request: Request) -> dict:
     engine_id = uuid.uuid4().hex[:12]
+    ip = _client_ip(request)
     with _cond:
         # The same device saying hello again (the app was reopened, the page
         # reloaded) replaces its old entry at once. Left in place, the old one
@@ -120,13 +134,13 @@ def hello(req: EngineHello) -> dict:
         for old in [k for k, e in _engines.items() if e["name"] == req.name]:
             del _engines[old]
         _engines[engine_id] = {
-            "id": engine_id, "name": req.name, "device": req.device,
+            "id": engine_id, "name": req.name, "device": req.device, "ip": ip,
             "last_seen": time.monotonic(), "jobs_done": 0,
         }
         _cond.notify_all()
     if not _current_name():
         _set_current(req.name)  # the first device lent becomes the current one
-    known_devices.remember(req.name, "lent", device=req.device, force=True)
+    known_devices.remember(req.name, "lent", device=req.device, ip=ip, force=True)
     logger.info("device lent to Moo: %s (%s)", req.name, req.device)
     return {"engine_id": engine_id}
 
@@ -206,7 +220,7 @@ def status() -> dict:
         working = next((e["name"] for e in alive if _takes_jobs(e)), None)
         return {
             "devices": [
-                {"name": e["name"], "device": e["device"], "jobs_done": e["jobs_done"],
+                {"name": e["name"], "device": e["device"], "jobs_done": e["jobs_done"], "ip": e.get("ip"),
                  "seconds_since_seen": round(now - e["last_seen"], 1),
                  "current": e["name"] == working}
                 for e in sorted(alive, key=lambda e: e["name"] != working)
@@ -215,7 +229,7 @@ def status() -> dict:
             "queued": len(_queue),
             # Every phone, browser and computer that has worked for this Moo, on now or not.
             "known": [
-                {"name": n, "kind": k.get("kind", "lent"), "url": k.get("url"),
+                {"name": n, "kind": k.get("kind", "lent"), "url": k.get("url"), "ip": k.get("ip"),
                  "last_seen": k.get("last_seen"),
                  "on_now": any(e["name"] == n for e in alive) if k.get("kind", "lent") == "lent" else None,
                  "current": n == working if k.get("kind", "lent") == "lent" else False}

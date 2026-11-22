@@ -508,7 +508,17 @@ export default function App() {
         forget: () => api!.forget(k.name),
       });
     }
+    // One row per machine: Moo Locals on the same computer (another port, a second copy) are one device.
+    // The one in use, or else one that answers, stands for the machine.
+    const hostOf = (url: string) => (url.split("//").pop() ?? "").split(/[:/]/)[0];
+    const byHost = new Map<string, Computer>();
     for (const c of computers) {
+      const h = hostOf(c.url);
+      const had = byHost.get(h);
+      const inUse = (x: Computer) => aiNow.mode === "local" && aiNow.local_url === x.url;
+      if (!had || inUse(c) || (!inUse(had) && c.reachable && !had.reachable)) byHost.set(h, c);
+    }
+    for (const c of byHost.values()) {
       rows.push({
         key: `pc-${c.url}`,
         title: c.name,

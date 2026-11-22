@@ -17,7 +17,6 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, refetchInterval: 5000 });
-  const config = useQuery({ queryKey: ["config"], queryFn: api.getConfig });
   const ai = useQuery({ queryKey: ["ai"], queryFn: api.aiGet });
 
   const restart = useMutation({
@@ -44,33 +43,6 @@ export default function DashboardPage() {
 
   return (
     <StepLayout title="Your Moo" subtitle="Manage settings and check on your device.">
-      <div className="moo-card flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-moo-ink/60">Status</span>
-          <StatusPill running={status.data?.assistant_running ?? false} />
-        </div>
-        {status.isPending ? <Spinner /> : status.data ? (
-          <dl className="text-sm grid grid-cols-2 gap-y-1.5 mt-1">
-            <dt className="text-moo-ink/60">Wi-Fi</dt><dd className="text-right">{status.data.wifi_ssid ?? "—"}</dd>
-            <dt className="text-moo-ink/60">Device</dt><dd className="text-right font-mono">{status.data.device_id}</dd>
-            <dt className="text-moo-ink/60">Version</dt><dd className="text-right">{status.data.version}</dd>
-            <dt className="text-moo-ink/60">Connection</dt><dd className="text-right capitalize">{getTransportKind()}</dd>
-          </dl>
-        ) : <p className="text-red-600 text-sm">Could not reach Moo.</p>}
-      </div>
-
-      {config.data?.preferences && (
-        <div className="moo-card flex flex-col gap-2">
-          <h2 className="font-semibold">Preferences</h2>
-          <dl className="text-sm grid grid-cols-2 gap-y-1.5">
-            <dt className="text-moo-ink/60">Voice</dt><dd className="text-right">{config.data.preferences.tts_voice ?? "—"}</dd>
-            <dt className="text-moo-ink/60">Age</dt><dd className="text-right">{config.data.preferences.age_range ?? "—"}</dd>
-            <dt className="text-moo-ink/60">Volume</dt><dd className="text-right">{config.data.preferences.volume ?? "—"}%</dd>
-          </dl>
-          <Button href="/preferences" variant="secondary" className="mt-2">Edit preferences</Button>
-        </div>
-      )}
-
       <div className="moo-card flex flex-col gap-2">
         <h2 className="font-semibold">Test the Braille cell</h2>
         <p className="text-sm text-moo-ink/70">
@@ -139,7 +111,21 @@ export default function DashboardPage() {
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
-      <div className="mt-auto flex flex-col gap-2">
+      {/* Settings: the Moo's status, its preferences, restart and reset. */}
+      <div className="moo-card flex flex-col gap-2 mt-auto">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">Settings</h2>
+          <StatusPill running={status.data?.assistant_running ?? false} />
+        </div>
+        {status.isPending ? <Spinner /> : status.data ? (
+          <dl className="text-sm grid grid-cols-2 gap-y-1.5 mt-1">
+            <dt className="text-moo-ink/60">Wi-Fi</dt><dd className="text-right">{status.data.wifi_ssid ?? "—"}</dd>
+            <dt className="text-moo-ink/60">Device</dt><dd className="text-right font-mono">{status.data.device_id}</dd>
+            <dt className="text-moo-ink/60">Version</dt><dd className="text-right">{status.data.version}</dd>
+            <dt className="text-moo-ink/60">Connection</dt><dd className="text-right capitalize">{getTransportKind()}</dd>
+          </dl>
+        ) : <p className="text-red-600 text-sm">Could not reach Moo.</p>}
+        <Button href="/preferences" variant="secondary" className="mt-1">Preferences: age, voice, volume</Button>
         <Button variant="secondary" onClick={() => restart.mutate()} disabled={restart.isPending}>
           {restart.isPending ? "Restarting..." : "Restart device"}
         </Button>
@@ -160,6 +146,7 @@ export default function DashboardPage() {
           <Button variant="secondary" onClick={() => setConfirmReset(true)}>Factory reset</Button>
         )}
       </div>
+
       <GetTheApp />
     </StepLayout>
   );

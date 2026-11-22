@@ -67,6 +67,7 @@ export interface KnownDevice {
   name: string;
   kind: "lent" | "computer";
   url?: string | null;
+  ip?: string | null; // the machine on the home network
   last_seen?: number | null; // seconds since 1970
   on_now?: boolean | null;
   current?: boolean;
@@ -334,12 +335,13 @@ export const api = {
   aiTest: () => request<AiTest>("/ai/test", { method: "POST", body: "{}" }),
   engineStatus: () =>
     request<{
-      devices: { name: string; jobs_done: number; seconds_since_seen: number; current?: boolean }[];
+      devices: { name: string; jobs_done: number; seconds_since_seen: number; current?: boolean; ip?: string | null }[];
       current?: string | null;
       queued: number;
       known?: KnownDevice[];
     }>("/engine/status"),
   // Take a remembered device off the list.
+  engineWhoami: () => request<{ ip: string | null }>("/engine/whoami"),
   engineForget: (name: string) =>
     request<{ ok: boolean }>("/engine/forget", { method: "POST", body: JSON.stringify({ name }) }),
   // Make a lent phone or computer the current one: it gets the jobs from now on.

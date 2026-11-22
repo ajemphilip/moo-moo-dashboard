@@ -84,10 +84,10 @@ function AiPageInner() {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [options, setOptions] = useState<AiOptions | null>(null);
   const [engines, setEngines] = useState<AiEngine[] | null>(null);
-  const [lent, setLent] = useState<{ name: string; jobs_done: number; current?: boolean }[]>([]);
+  const [lent, setLent] = useState<{ name: string; jobs_done: number; current?: boolean; ip?: string | null }[]>([]);
   // Every device that has worked for this Moo, on now or not (the Moo remembers them).
   const [known, setKnown] = useState<KnownDevice[]>([]);
-  const [settingUp, setSettingUp] = useState(false);
+  const [myIp, setMyIp] = useState<string | null>(null);
   // Moo Local is offered on computers only: phones and tablets do the work in the browser or the Moo app.
   const onComputer = typeof navigator !== "undefined" && !/iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent);
   const [engine, setEngine] = useState<EngineState | null>(null);
@@ -123,6 +123,7 @@ function AiPageInner() {
         setKnown(s.known ?? []);
       }).catch(() => {});
     tick();
+    api.engineWhoami().then((r) => setMyIp(r.ip)).catch(() => {});
     const id = setInterval(tick, 3000);
     return () => clearInterval(id);
   }, []);
@@ -216,48 +217,83 @@ function AiPageInner() {
   const kitten2Voice = kitten2Voices.includes(mine.kitten2Voice) ? mine.kitten2Voice : kitten2Voices[0];
   const mode = settings?.mode;
   const thisDevice = mode === "browser" && thisDeviceWanted() && engine?.status !== "off";
-  // The rows of the device list. Computers come from the search on the network and the Moo's memory;
-  // phones and browsers from the devices lending now and the Moo's memory.
-  type Row = { key: string; name: string; text: string; current: boolean; on: boolean; remembered: boolean; use?: () => void };
+  // The device list has one row per machine. A computer may be reached several ways (Moo Local,
+  // a second Moo Local, a browser on it); they are grouped by the machine's address on the home
+  // network, and the row shows the way in use, or else the best way that is on.
+  type Way = {
+    kind: "computer" | "lent"; name: string; ip: string; on: boolean; ready?: boolean; current: boolean;
+    last?: number | null; jobs?: number; engine?: AiEngine;
+  };
+  type Row = { key: string; name: string; text: string; current: boolean; on: boolean; names: string[]; use?: () => void; mine: boolean };
   const ago = (t?: number | null) => {
     if (!t) return "";
     const m = Math.round((Date.now() / 1000 - t) / 60);
     return m < 2 ? "just now" : m < 90 ? `${m} minutes ago` : m < 36 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`;
   };
-  const knownNames = new Set(known.map((k) => k.name));
-  const devices: Row[] = [];
+  const hostOf = (url?: string | null) => ((url ?? "").split("//").pop() ?? "").split(/[:/]/)[0];
+  const knownByName = new Map(known.map((k) => [k.name, k]));
+  const ways: Way[] = [];
   for (const e of engines ?? []) {
-    devices.push({
-      key: `pc-${e.url}`,
-      name: e.name,
-      on: e.reachable,
-      current: settings?.mode === "local" && settings?.local_url === e.url,
-      remembered: knownNames.has(e.name),
-      text: `Moo Local · ${e.ready ? "ready" : e.reachable ? "on, getting ready" : `off${ago(known.find((k) => k.name === e.name)?.last_seen) ? `, last seen ${ago(known.find((k) => k.name === e.name)?.last_seen)}` : ""} · start Moo Local on it`}`,
-      use: e.reachable ? () => chooseComputer(e) : undefined,
+    ways.push({
+      kind: "computer", name: e.name, ip: hostOf(e.url), on: e.reachable, ready: e.ready, engine: e,
+      current: settings?.mode === "local" && settings?.local_url === e.url, last: knownByName.get(e.name)?.last_seen,
     });
   }
-  const lentNames = new Set(lent.map((d) => d.name));
-  const lentRows = [
-    ...lent.map((d) => ({ name: d.name, on: true, current: !!d.current, jobs: d.jobs_done, last: null as number | null })),
-    ...known.filter((k) => k.kind === "lent" && !lentNames.has(k.name)).map((k) => ({ name: k.name, on: false, current: false, jobs: 0, last: k.last_seen ?? null })),
-  ];
-  for (const d of lentRows) {
-    const mine = d.name === deviceName();
-    const app = /app\b/.test(d.name);
-    devices.push({
-      key: `lent-${d.name}`,
-      name: mine ? `${d.name} (this device)` : d.name,
-      on: d.on || (mine && thisDevice),
-      current: settings?.mode === "browser" && (mine ? thisDevice : !thisDevice && d.current),
-      remembered: knownNames.has(d.name),
-      text: d.on
-        ? `${app ? "The Moo app" : "A browser"} · ${d.jobs} jobs done`
-        : `${app ? "The Moo app" : "A browser"} · off${d.last ? `, last seen ${ago(d.last)}` : ""} · ${app ? "open the Moo app on it" : "open the Moo website on it and set it up"}`,
-      use: mine ? chooseThisDevice : d.on ? () => chooseOther(d.name) : undefined,
+  const lendingNow = new Set(lent.map((d) => d.name));
+  for (const d of lent) {
+    ways.push({
+      kind: "lent", name: d.name, ip: d.ip ?? knownByName.get(d.name)?.ip ?? d.name, on: true, jobs: d.jobs_done,
+      current: settings?.mode === "browser" && (d.name === deviceName() ? thisDevice : !thisDevice && !!d.current),
     });
   }
+  for (const k of known.filter((k) => k.kind === "lent" && !lendingNow.has(k.name))) {
+    // A device remembered before addresses were kept has none; if it is this browser, it is here.
+    const ip = k.ip ?? (k.name === deviceName() && myIp ? myIp : k.name);
+    ways.push({ kind: "lent", name: k.name, ip, on: false, current: false, last: k.last_seen });
+  }
+  const groups = new Map<string, Way[]>();
+  for (const w of ways) groups.set(w.ip, [...(groups.get(w.ip) ?? []), w]);
+  const machineName = (g: Way[]) => {
+    const lentName = g.find((w) => w.kind === "lent")?.name;
+    if (lentName) return lentName;
+    return g[0].name.replace(/^Moo Local on /, "").replace(/\s*\(\d+\)$/, "");
+  };
+  const devices: Row[] = [...groups.entries()].map(([ip, g]) => {
+    const pick =
+      g.find((w) => w.current) ??
+      g.find((w) => w.kind === "computer" && w.on && w.ready) ??
+      g.find((w) => w.kind === "computer" && w.on) ??
+      g.find((w) => w.kind === "lent" && w.on) ??
+      [...g].sort((a, b) => (b.last ?? 0) - (a.last ?? 0))[0];
+    const mine = !!myIp && ip === myIp;
+    const app = /app\b/.test(pick.name);
+    const how = pick.kind === "computer" ? "Moo Local" : app ? "The Moo app" : "In the browser";
+    const last = Math.max(...g.map((w) => w.last ?? 0));
+    const state = pick.on
+      ? pick.kind === "computer"
+        ? pick.ready ? "ready" : "on, getting ready"
+        : `on${pick.jobs ? ` · ${pick.jobs} jobs done` : ""}`
+      : `off${last ? `, last seen ${ago(last)}` : ""} · ${pick.kind === "computer" ? "start Moo Local on it" : app ? "open the Moo app on it" : "open the Moo website on it"}`;
+    return {
+      key: ip,
+      name: `${machineName(g)}${mine ? " (this device)" : ""}`,
+      text: `${how} · ${state}`,
+      current: g.some((w) => w.current),
+      on: g.some((w) => w.on),
+      names: g.map((w) => w.name).filter((n) => knownByName.has(n)),
+      mine,
+      use: !pick.on
+        ? undefined
+        : pick.kind === "computer"
+          ? () => chooseComputer(pick.engine!)
+          : pick.name === deviceName()
+            ? chooseThisDevice
+            : () => chooseOther(pick.name),
+    };
+  });
   devices.sort((a, b) => Number(b.current) - Number(a.current) || Number(b.on) - Number(a.on));
+  // Set up this device knows where it is: a computer that runs Moo Local uses it, anything else the browser.
+  const myMooLocal = ways.find((w) => w.kind === "computer" && w.on && !!myIp && w.ip === myIp);
   const choice: Choice | null =
     mode === "cloud" ? "cloud" : mode === "local" ? "computer" : mode === "browser" ? (thisDevice ? "this" : lent.length ? "computer" : null) : null;
 
@@ -380,11 +416,11 @@ function AiPageInner() {
               <div className="font-medium">{d.name}{d.current ? " · in use now" : ""}</div>
               <div className="text-xs opacity-80">{d.text}</div>
             </button>
-            {!d.current && d.remembered && (
+            {!d.current && d.names.length > 0 && (
               <button
                 type="button"
                 title="Take it off the list"
-                onClick={() => api.engineForget(d.name).then(() => setKnown((k) => k.filter((x) => x.name !== d.name))).catch(() => {})}
+                onClick={() => Promise.all(d.names.map((n) => api.engineForget(n))).then(() => setKnown((k) => k.filter((x) => !d.names.includes(x.name)))).catch(() => {})}
                 className="rounded-moo border border-moo-ink/10 px-3 text-xs text-moo-ink/60"
               >
                 Forget
@@ -394,33 +430,27 @@ function AiPageInner() {
         ))}
         {engines === null && <Spinner label="Looking for computers…" />}
         <div className="flex flex-col gap-2 mt-1">
-          <Button onClick={() => setSettingUp((v) => !v)} disabled={busy || thisDevice}>
-            {thisDevice ? "This device is set up" : "Set up this device"}
-          </Button>
-          {/* One button: it asks how this device should do the work. */}
-          {settingUp && !thisDevice && (
-            <div className="flex flex-col gap-2 rounded-moo border border-moo-ink/10 p-3">
-              <button type="button" onClick={() => { setSettingUp(false); chooseThisDevice(); }} className="rounded-moo border border-moo-ink/20 bg-white px-3 py-2 text-left">
-                <div className="font-medium">In this browser</div>
-                <div className="text-xs text-moo-ink/70">Nothing to install. Keep this page open while your child plays.</div>
-                {here && (
-                  <div className="text-xs text-moo-ink/60 mt-1">
-                    {githubPages
-                      ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>; this device has to be on the Moo&apos;s wifi. </>
-                      : <>Opens the Moo&apos;s secure address first. </>}
-                    Your browser warns once: choose Advanced (Show Details in Safari), then continue.
-                  </div>
-                )}
-              </button>
-              {onComputer ? (
-                <button type="button" onClick={() => router.push("/ai/setup")} className="rounded-moo border border-moo-ink/20 bg-white px-3 py-2 text-left">
-                  <div className="font-medium">With Moo Local</div>
-                  <div className="text-xs text-moo-ink/70">The best stories and voices. Install it once on this computer; it then works without this page.</div>
-                </button>
-              ) : (
-                <p className="text-xs text-moo-ink/70">On a phone the Moo app can do more than the browser: larger models and the Kokoro voice.</p>
-              )}
-            </div>
+          {myMooLocal ? (
+            <Button onClick={() => chooseComputer(myMooLocal.engine!)} disabled={busy || myMooLocal.current}>
+              {myMooLocal.current ? "This computer's Moo Local is in use" : "Use Moo Local on this computer"}
+            </Button>
+          ) : (
+            <Button onClick={chooseThisDevice} disabled={busy || thisDevice}>
+              {thisDevice ? "This device is set up" : "Set up this device"}
+            </Button>
+          )}
+          {!myMooLocal && !thisDevice && here && (
+            <p className="text-xs text-moo-ink/60">
+              {githubPages
+                ? <>Opens the Moo&apos;s own page at <span className="font-mono">{mooHost}</span>; this device has to be on the Moo&apos;s wifi. </>
+                : <>Opens the Moo&apos;s secure address first. </>}
+              Your browser warns once: choose Advanced (Show Details in Safari), then continue.
+            </p>
+          )}
+          {!myMooLocal && onComputer && (
+            <button type="button" onClick={() => router.push("/ai/setup")} className="text-sm underline text-left text-moo-ink/70">
+              Better stories and voices: install Moo Local on this computer
+            </button>
           )}
           {crashed && (
             <p className="text-sm text-red-600">
