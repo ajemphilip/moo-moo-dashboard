@@ -199,6 +199,7 @@ export interface AiEngine {
   url: string;
   reachable: boolean;
   ready: boolean;
+  system?: string | null;
 }
 
 export interface AiTest {

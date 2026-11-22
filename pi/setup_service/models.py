@@ -215,6 +215,7 @@ class AiEngine(BaseModel):
     url: str
     reachable: bool
     ready: bool
+    system: str | None = None  # "Windows AMD64", "Darwin arm64"…, from the computer's /health
 
 
 class AiDiscoverResponse(BaseModel):

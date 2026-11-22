@@ -8,7 +8,7 @@ import { Button } from "@/components/Button";
 import { StepLayout } from "@/components/StepLayout";
 import { api, PiApiError } from "@/lib/api";
 import { stopThisDevice } from "@/lib/lendEngine";
-import { readCachedBase } from "@/lib/pi";
+import { mooBase } from "@/lib/mooBase";
 
 type System = "windows" | "mac" | "linux";
 
@@ -31,16 +31,6 @@ function detectSystem(): System | null {
   if (p.includes("mac")) return "mac";
   if (p.includes("linux") || p.includes("x11") || p.includes("cros")) return "linux";
   return null;
-}
-
-// Where the Moo is. Served by the Moo itself the links stay on this page's
-// own address (so an https page downloads over https).
-function mooBase(): { links: string; http: string } {
-  if (typeof window === "undefined") return { links: "", http: "http://moo.local:8000" };
-  const fromMoo = process.env.NEXT_PUBLIC_GITHUB_PAGES !== "true" && !window.location.origin.includes(":3000");
-  const base = fromMoo ? window.location.origin : readCachedBase() || "http://moo.local:8000";
-  const host = base.replace(/^https?:\/\//, "").replace(/:\d+.*$/, "").replace(/\/.*$/, "");
-  return { links: fromMoo ? "" : base, http: `http://${host}:8000` };
 }
 
 function HowToOpen({ system }: { system: System }) {

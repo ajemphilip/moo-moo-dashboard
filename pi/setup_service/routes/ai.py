@@ -130,6 +130,7 @@ def discover() -> AiDiscoverResponse:
         h = answers.get(url)
         e.reachable = h is not None
         e.ready = bool(h and h.get("story_model_ready") and h.get("voice_ready"))
+        e.system = (h or {}).get("system")
         if e.reachable:
             known_devices.remember(e.name, "computer", url=e.url)
     return AiDiscoverResponse(engines=list(engines.values()))

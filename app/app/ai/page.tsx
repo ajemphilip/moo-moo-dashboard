@@ -3,7 +3,9 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/Button";
+import Link from "next/link";
 import { MooLocalModels } from "@/components/MooLocalModels";
+import { installerFor, mooBase } from "@/lib/mooBase";
 import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
 import { deviceName } from "@/components/ThisDevice";
@@ -318,6 +320,7 @@ function AiPageInner() {
   const labelOf = (list: { id: string; label: string }[] | undefined, id: string | null | undefined) =>
     (list?.find((x) => x.id === id)?.label ?? id ?? "").split(" — ")[0];
   const localMachine = engines?.find((e) => e.url === settings?.local_url);
+  const installer = installerFor(localMachine?.system);
   const lentOther = mode === "browser" && !thisDevice;
   const where =
     mode === "cloud"
@@ -703,6 +706,19 @@ function AiPageInner() {
             <p className="text-sm text-emerald-700">
               “{test.line}” — story {test.story_seconds}s, voice {test.voice_seconds}s.
             </p>
+          )}
+          {options.mode === "local" && (
+            <div className="flex flex-col gap-2 border-t border-moo-ink/10 pt-3">
+              <a className="moo-button text-center" href={`${mooBase().links}/local-ai/download/${installer?.id ?? "windows"}`} download>
+                {installer
+                  ? `Download the installer for ${settings?.local_name?.replace(/^Moo Local on /, "") ?? "this computer"} (${installer.label})`
+                  : "Download the Moo Local installer"}
+              </a>
+              <p className="text-xs text-moo-ink/70">
+                Open it on {settings?.local_name?.replace(/^Moo Local on /, "") ?? "that computer"} to update Moo Local to the
+                version on this Moo. <Link className="underline" href="/ai/setup">Other systems and how to open the file</Link>
+              </p>
+            </div>
           )}
         </div>
       )}
