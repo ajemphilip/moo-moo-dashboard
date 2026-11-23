@@ -42,7 +42,8 @@ if [ "$OS" = "Linux" ] && [ ! -t 1 ] && [ -z "${MOO_IN_TERMINAL:-}" ] && [ -f "$
   done
 fi
 
-say() { printf '\n==> %s\n' "$1"; }
+STEP=0
+say() { STEP=$((STEP + 1)); printf '\n==> Step %s: %s\n' "$STEP" "$1"; }
 fail() {
   printf '\nMoo Local could not be set up: %s\n' "$1"
   printf 'The details are in %s. Running this again continues where it stopped.\n' "$ROOT/install.log"
@@ -67,15 +68,34 @@ if [ "$OS" = "Darwin" ] && [ "$ARCH" != "arm64" ]; then
   echo "Pocket and Kitten 2 need a newer PyTorch than Intel Macs can have."
 fi
 
+# --- What this window is ---------------------------------------------------------
+# A parent who sees a window fill with text after a download may fear a virus.
+# Say first what this is, where it downloads from and what is normal.
+OLLAMA_FROM="ollama.com (Ollama, which writes the stories)"
+cat <<INTRO
+
+  Moo Local installer
+  This window is the Moo Local installer you downloaded from your Moo.
+  It sets up the program that lets your Moo use this computer for its stories,
+  listening and voice. Nothing has to be typed$([ "$OS" = "Linux" ] && printf ', except this computer'"'"'s password once, for Ollama').
+
+  It shows each step as it goes. Text from the programs it installs scrolls past;
+  that is normal. It downloads only from your Moo ($MOO),
+  astral.sh and github.com (uv and Python), $OLLAMA_FROM
+  and pypi.org (Python's libraries). Everything goes into your home folder, $HOME
+  A record of every step is kept in $ROOT/install.log
+  It takes a while the first time. Leave this window open until it says it is done.
+INTRO
+
 # --- Moo Local's files, from the Moo ---------------------------------------
-say "Moo Local from the Moo ($MOO)"
+say "Moo Local, from your Moo ($MOO)"
 for f in moo_local.py mlx_voice_worker.py kitten2_worker.py requirements-base.txt requirements.txt requirements-kitten2.txt; do
   curl -fsSL "$MOO/local-ai/files/$f" -o "$APP/$f.new" || fail "the Moo at $MOO did not answer. Is this computer on the same wifi as the Moo?"
   mv "$APP/$f.new" "$APP/$f"
 done
 
 # --- uv and Python ------------------------------------------------------------
-say "Python 3.12 (through uv)"
+say "Python 3.12, through uv (from astral.sh and github.com)"
 UV="$ROOT/bin/uv"
 if [ ! -x "$UV" ] || ! "$UV" --version 2>/dev/null | grep -q "$UV_VERSION"; then
   curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR="$ROOT/bin" INSTALLER_NO_MODIFY_PATH=1 sh \
@@ -86,7 +106,7 @@ TORCH=()
 [ "$OS" = "Linux" ] && TORCH=(--torch-backend cpu)  # PyTorch's NVIDIA build is 3 GB more and not needed here
 
 # --- Ollama ---------------------------------------------------------------------
-say "Ollama, for the stories"
+say "Ollama, the free program that writes the stories on this computer (from ollama.com)"
 OLLAMA="$(command -v ollama || true)"
 for c in /opt/homebrew/bin/ollama /usr/local/bin/ollama /usr/bin/ollama /Applications/Ollama.app/Contents/Resources/ollama \
          "$HOME/Applications/Ollama.app/Contents/Resources/ollama" "$ROOT/ollama/ollama"; do
@@ -102,7 +122,8 @@ if [ -z "$OLLAMA" ] && ! ollama_up; then
       || fail "Ollama could not be downloaded."
     OLLAMA="$ROOT/ollama/ollama"
   else
-    echo "Ollama's own installer asks for this computer's password."
+    echo "Ollama's own installer now asks for this computer's password, the one used to log in."
+    echo "It needs it to install Ollama for every user of this computer. The letters do not show while you type."
     curl -fsSL https://ollama.com/install.sh | sh || fail "Ollama's installer did not finish."
     OLLAMA="$(command -v ollama || echo /usr/local/bin/ollama)"
   fi
@@ -116,15 +137,15 @@ if ! ollama_up; then
   echo "otherwise open Ollama once. Then open this installer again: it carries on from here."
   fail "Ollama is not running yet. See $ROOT/ollama.log"
 fi
-echo "Ollama is running."
+echo "Ollama is installed and running."
 
 # --- Python libraries -------------------------------------------------------------
-say "Python libraries (several minutes the first time)"
+say "Python libraries, from pypi.org (several minutes the first time; a lot of text scrolls past)"
 [ -x "$VENV/bin/python" ] || "$UV" venv --python 3.12 "$VENV" || fail "Python 3.12 could not be set up."
 "$UV" pip install --python "$VENV/bin/python" ${TORCH[@]+"${TORCH[@]}"} -r "$APP/requirements-base.txt" \
   || fail "the Python libraries could not be installed."
 if [ "$OS" = "Linux" ] || [ "$ARCH" = "arm64" ]; then
-  say "Kitten TTS 2 (its own libraries)"
+  say "Kitten TTS 2, one of the voices (its own libraries)"
   [ -x "$KVENV/bin/python" ] || "$UV" venv --python 3.12 --seed "$KVENV" || fail "Python 3.12 could not be set up for Kitten 2."
   "$UV" pip install --python "$KVENV/bin/python" ${TORCH[@]+"${TORCH[@]}"} -r "$APP/requirements-kitten2.txt" \
     || echo "Kitten TTS 2 could not be installed; Moo Local works without it."
@@ -211,6 +232,6 @@ cat <<EOF
 Moo Local is running on this computer, and starts by itself at every login.
 On the Moo website, open AI engine: this computer appears under Local
 machines. Choose it there, then pick the story, listening and voice models
-to download under Models. This window can be closed.
+to download under Models. The installer is done; this window can be closed.
 EOF
 done_ok

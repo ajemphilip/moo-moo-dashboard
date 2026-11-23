@@ -30,7 +30,8 @@ $PythonRequest = "cpython-3.12-windows-x86_64-none"
 New-Item -ItemType Directory -Force -Path $App, (Join-Path $Root "bin"), (Join-Path $Root "kokoro"), (Join-Path $Root "voices") | Out-Null
 try { Start-Transcript -Append -Path (Join-Path $Root "install.log") | Out-Null } catch {}
 
-function Say($text) { Write-Host ""; Write-Host "==> $text" -ForegroundColor Cyan }
+$script:Step = 0
+function Say($text) { $script:Step++; Write-Host ""; Write-Host "==> Step $($script:Step): $text" -ForegroundColor Cyan }
 function Fail($text) {
     Write-Host ""
     Write-Host "Moo Local could not be set up: $text" -ForegroundColor Red
@@ -72,8 +73,24 @@ function Wait-Ollama($seconds) {
     return (Ollama-Up)
 }
 
+# --- What this window is ----------------------------------------------------------
+# A parent who sees a console fill with text after a download may fear a virus.
+# Say first what this is, where it downloads from and what is normal.
+Write-Host ""
+Write-Host "  Moo Local installer" -ForegroundColor Green
+Write-Host "  This window is the Moo Local installer you downloaded from your Moo."
+Write-Host "  It sets up the program that lets your Moo use this computer for its stories,"
+Write-Host "  listening and voice. Nothing has to be typed."
+Write-Host ""
+Write-Host "  It shows each step as it goes. Text from the programs it installs scrolls past;"
+Write-Host "  that is normal. It downloads only from your Moo ($Moo), github.com (uv and"
+Write-Host "  Python), ollama.com (Ollama, which writes the stories) and pypi.org (Python's"
+Write-Host "  libraries), and everything goes into your user folder, $env:USERPROFILE"
+Write-Host "  A record of every step is kept in $Root\install.log"
+Write-Host "  It takes a while the first time. Leave this window open until it says it is done."
+
 # --- Moo Local's files, from the Moo -----------------------------------------
-Say "Moo Local from the Moo ($Moo)"
+Say "Moo Local, from your Moo ($Moo)"
 foreach ($f in "moo_local.py", "mlx_voice_worker.py", "kitten2_worker.py", "requirements-base.txt", "requirements.txt", "requirements-kitten2.txt") {
     try { Invoke-WebRequest -UseBasicParsing "$Moo/local-ai/files/$f" -OutFile (Join-Path $App "$f.new") }
     catch { Fail "the Moo at $Moo did not answer. Is this computer on the same wifi as the Moo?" }
@@ -81,7 +98,7 @@ foreach ($f in "moo_local.py", "mlx_voice_worker.py", "kitten2_worker.py", "requ
 }
 
 # --- uv and Python ---------------------------------------------------------------
-Say "Python 3.12 (through uv)"
+Say "Python 3.12, through uv (from github.com)"
 $Uv = Join-Path $Root "bin\uv.exe"
 $haveUv = (Test-Path $Uv) -and ((& $Uv --version) -match [regex]::Escape($UvVersion))
 if (-not $haveUv) {
@@ -98,12 +115,17 @@ $env:UV_PYTHON_PREFERENCE = "only-managed"
 # --- Ollama -----------------------------------------------------------------------
 # What matters is that Ollama answers on this computer. Where its program
 # lives, and whether it was just installed, varies between versions.
-Say "Ollama, for the stories"
+Say "Ollama, the free program that writes the stories on this computer (from ollama.com)"
 $Ollama = Find-Ollama
 if (-not $Ollama -and -not (Ollama-Up)) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    Write-Host "Installing Ollama. This takes a minute or two; its own messages go to the record, not this window."
+    Write-Host "Ollama may open its own window at the end. Nothing has to be done in it."
     if ($winget) {
-        & $winget.Source install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements
+        # With "Stop", Windows PowerShell 5.1 turns a redirected native stderr line into an error.
+        $ErrorActionPreference = "Continue"
+        & $winget.Source install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements *>> (Join-Path $Root "ollama-install.log")
+        $ErrorActionPreference = "Stop"
     }
     $Ollama = Find-Ollama
     if (-not $Ollama -and -not (Wait-Ollama 5)) {
@@ -126,16 +148,16 @@ if (-not (Wait-Ollama 60)) {
     Write-Host "Then open Install Moo Local.cmd again: it carries on from here."
     Fail "Ollama is not running yet."
 }
-Write-Host "Ollama is running."
+Write-Host "Ollama is installed and running."
 
 # --- Python libraries ---------------------------------------------------------------
-Say "Python libraries (several minutes the first time)"
+Say "Python libraries, from pypi.org (several minutes the first time; a lot of text scrolls past)"
 $Py = Join-Path $Venv "Scripts\python.exe"
 if (-not (Test-Path $Py)) { & $Uv venv --python $PythonRequest $Venv; if ($LASTEXITCODE -ne 0) { Fail "Python 3.12 could not be set up." } }
 & $Uv pip install --python $Py -r (Join-Path $App "requirements-base.txt")
 if ($LASTEXITCODE -ne 0) { Fail "the Python libraries could not be installed." }
 
-Say "Kitten TTS 2 (its own libraries)"
+Say "Kitten TTS 2, one of the voices (its own libraries)"
 $KPy = Join-Path $KVenv "Scripts\python.exe"
 if (-not (Test-Path $KPy)) { & $Uv venv --seed --python $PythonRequest $KVenv }
 if (Test-Path $KPy) { & $Uv pip install --python $KPy -r (Join-Path $App "requirements-kitten2.txt") }
@@ -181,5 +203,5 @@ Write-Host ""
 Write-Host "Moo Local is running on this computer, and starts by itself at every login." -ForegroundColor Green
 Write-Host "On the Moo website, open AI engine: this computer appears under Local machines."
 Write-Host "Choose it there, then pick the story, listening and voice models to download under Models."
-Write-Host "This window can be closed."
+Write-Host "The installer is done. This window can be closed."
 try { Stop-Transcript | Out-Null } catch {}

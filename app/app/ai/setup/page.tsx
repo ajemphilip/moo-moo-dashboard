@@ -40,7 +40,8 @@ function HowToOpen({ system }: { system: System }) {
         Open <b>Install Moo Local</b> from Downloads. Safari unzips it by itself; in another browser, double-click the
         zip first. The file is not signed, so the Mac asks once: if it says it cannot check the file, open System
         Settings → Privacy &amp; Security and choose <b>Open Anyway</b> (on older macOS, right-click the file and choose
-        Open). A Terminal window shows the progress; nothing has to be typed.
+        Open). A Terminal window then opens: that is the installer itself. It says what it is, shows each step and where
+        it downloads from, and nothing has to be typed. Text from the programs it installs scrolls past; that is normal.
       </p>
     );
   if (system === "windows")
@@ -48,13 +49,16 @@ function HowToOpen({ system }: { system: System }) {
       <p className="text-xs text-moo-ink/70">
         Open <b>Install Moo Local.cmd</b> from Downloads. If the browser warns about the file, choose Keep. The file is
         not signed, so Windows SmartScreen asks once: choose <b>More info</b> → <b>Run anyway</b>. Near the end Windows
-        asks for a Yes, so the Moo can reach this computer through the firewall.
+        asks for a Yes, so the Moo can reach this computer through the firewall. A black window with text opens: that is the
+        installer itself. It says what it is, shows each step and where it downloads from, and nothing has to be typed.
+        Text from the programs it installs scrolls past; that is normal. Leave it open until it says it is done.
       </p>
     );
   return (
     <p className="text-xs text-moo-ink/70">
       In Downloads, right-click <b>Install Moo Local.sh</b> → Properties → allow it to run as a program, then open it
-      (choose Run if asked). Ollama&apos;s own installer asks for this computer&apos;s password once.
+      (choose Run if asked). A Terminal window opens: that is the installer itself, showing each step and where it
+      downloads from. Ollama&apos;s own installer asks for this computer&apos;s password once, the one used to log in.
     </p>
   );
 }
