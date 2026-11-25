@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/Button";
 import { GetTheApp } from "@/components/GetTheApp";
 import { Spinner } from "@/components/Spinner";
@@ -13,9 +14,8 @@ import { api } from "@/lib/api";
 type Probe = "loading" | "found-unconfigured" | "found-configured" | "missing";
 
 export default function Welcome() {
+  const router = useRouter();
   const [probe, setProbe] = useState<Probe>("loading");
-  // Where "Continue setup" leads: on Moo's own wifi, the choice of home wifi or no internet.
-  const [nextStep, setNextStep] = useState("/wifi");
 
   useEffect(() => {
     let cancelled = false;
@@ -29,14 +29,15 @@ export default function Welcome() {
       try {
         const status = await api.status();
         if (cancelled) return;
-        setNextStep(!status.wifi_connected && getTransportKind() !== "bluetooth" ? "/network" : "/wifi");
+        // On Moo's own wifi the dashboard is the start; its Wi-Fi card sets up the home wifi.
+        if (!status.wifi_connected && getTransportKind() !== "bluetooth") { router.replace("/dashboard"); return; }
         setProbe(status.configured ? "found-configured" : "found-unconfigured");
       } catch {
         if (!cancelled) setProbe("missing");
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [router]);
 
   return (
     <StepLayout title="Welcome to Moo" subtitle="A gentle storyteller for little hands and ears.">
@@ -56,7 +57,7 @@ export default function Welcome() {
         {probe === "found-unconfigured" && (
           <>
             <p className="text-moo-ink/80">Found your Moo. Let&apos;s get it ready.</p>
-            <Button href={nextStep} className="w-full mt-2">Continue setup</Button>
+            <Button href="/wifi" className="w-full mt-2">Continue setup</Button>
           </>
         )}
         {probe === "found-configured" && (

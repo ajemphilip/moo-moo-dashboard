@@ -7,6 +7,7 @@ import { Button } from "@/components/Button";
 import { GetTheApp } from "@/components/GetTheApp";
 import { Spinner } from "@/components/Spinner";
 import { StepLayout } from "@/components/StepLayout";
+import { WifiCard } from "@/components/WifiCard";
 import { api, PiApiError, type BrailleTestResult } from "@/lib/api";
 import { getTransportKind } from "@/lib/transport";
 
@@ -43,6 +44,8 @@ export default function DashboardPage() {
 
   return (
     <StepLayout title="Your Moo" subtitle="Manage settings and check on your device.">
+      <WifiCard status={status.data} />
+
       <div className="moo-card flex flex-col gap-2">
         <h2 className="font-semibold">Test the Braille cell</h2>
         <p className="text-sm text-moo-ink/70">
@@ -126,9 +129,6 @@ export default function DashboardPage() {
           </dl>
         ) : <p className="text-red-600 text-sm">Could not reach Moo.</p>}
         <Button href="/preferences" variant="secondary" className="mt-1">Preferences: age, voice, volume</Button>
-        <Button href={status.data?.wifi_connected ? "/wifi" : "/network"} variant="secondary">
-          {status.data?.wifi_connected ? "Change Wi-Fi" : "Set up Wi-Fi"}
-        </Button>
         <Button variant="secondary" onClick={() => restart.mutate()} disabled={restart.isPending}>
           {restart.isPending ? "Restarting..." : "Restart device"}
         </Button>

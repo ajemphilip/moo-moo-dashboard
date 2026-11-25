@@ -99,7 +99,7 @@ export default function WifiPage() {
   }
 
   return (
-    <StepLayout step={2} totalSteps={6} title="Pick your wifi" subtitle="Choose the same network the rest of your house uses." back={getTransportKind() === "bluetooth" ? "/connect" : "/network"}>
+    <StepLayout step={2} totalSteps={6} title="Pick your wifi" subtitle="Choose the same network the rest of your house uses." back={getTransportKind() === "bluetooth" ? "/connect" : "/dashboard"}>
       {scan.isPending && <Spinner label="Scanning for networks..." />}
       {scan.isError && <p className="text-red-600 text-sm">Could not load networks. Pull to refresh.</p>}
       {scan.data && (
