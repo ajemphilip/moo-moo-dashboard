@@ -25,6 +25,7 @@ def get_status() -> StatusResponse:
         configured=moo_config.is_configured(),
         wifi_connected=ssid is not None,
         wifi_ssid=ssid,
+        offline=moo_config.is_offline(cfg),
         assistant_running=service_control.is_assistant_running(),
         device_id=cfg.get("device", {}).get("id", _device_id_fallback()),
         version=VERSION,

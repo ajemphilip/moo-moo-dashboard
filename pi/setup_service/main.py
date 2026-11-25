@@ -25,6 +25,7 @@ from .routes import engine as engine_routes
 from .routes import games as games_routes
 from .routes import letters as letters_routes
 from .routes import localai as localai_routes
+from .routes import network as network_routes
 from .routes import status as status_routes
 from .routes import story as story_routes
 from .routes import system as system_routes
@@ -67,6 +68,8 @@ app.include_router(ai_routes.router)
 app.include_router(devicecheck_routes.router)
 app.include_router(engine_routes.router)
 app.include_router(localai_routes.router)
+app.include_router(network_routes.router)
+network_routes.restore_on_start()
 
 
 @app.get("/healthz")

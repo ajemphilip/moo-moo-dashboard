@@ -11,6 +11,7 @@ class StatusResponse(BaseModel):
     configured: bool
     wifi_connected: bool
     wifi_ssid: Optional[str] = None
+    offline: bool = False  # used on its own wifi, without internet
     assistant_running: bool
     device_id: str
     version: str

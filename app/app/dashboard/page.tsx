@@ -119,13 +119,16 @@ export default function DashboardPage() {
         </div>
         {status.isPending ? <Spinner /> : status.data ? (
           <dl className="text-sm grid grid-cols-2 gap-y-1.5 mt-1">
-            <dt className="text-moo-ink/60">Wi-Fi</dt><dd className="text-right">{status.data.wifi_ssid ?? "—"}</dd>
+            <dt className="text-moo-ink/60">Wi-Fi</dt><dd className="text-right">{status.data.wifi_ssid ?? (status.data.offline ? "Moo's own, no internet" : "—")}</dd>
             <dt className="text-moo-ink/60">Device</dt><dd className="text-right font-mono">{status.data.device_id}</dd>
             <dt className="text-moo-ink/60">Version</dt><dd className="text-right">{status.data.version}</dd>
             <dt className="text-moo-ink/60">Connection</dt><dd className="text-right capitalize">{getTransportKind()}</dd>
           </dl>
         ) : <p className="text-red-600 text-sm">Could not reach Moo.</p>}
         <Button href="/preferences" variant="secondary" className="mt-1">Preferences: age, voice, volume</Button>
+        <Button href={status.data?.wifi_connected ? "/wifi" : "/network"} variant="secondary">
+          {status.data?.wifi_connected ? "Change Wi-Fi" : "Set up Wi-Fi"}
+        </Button>
         <Button variant="secondary" onClick={() => restart.mutate()} disabled={restart.isPending}>
           {restart.isPending ? "Restarting..." : "Restart device"}
         </Button>

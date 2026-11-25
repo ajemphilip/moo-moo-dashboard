@@ -7,8 +7,11 @@ import subprocess
 
 from fastapi import APIRouter, HTTPException
 
+import config as moo_config
+
 from ..models import WifiConnectRequest, WifiConnectResponse, WifiNetwork, WifiScanResponse
 from ..services import wifi_manager
+from . import network
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/wifi")
@@ -31,4 +34,8 @@ def connect(req: WifiConnectRequest) -> WifiConnectResponse:
             status_code=500,
             detail=f"Could not connect to {req.ssid}: {exc.stderr.strip() or 'comitup error'}",
         ) from exc
+    # Joining a wifi ends offline use: port 80 goes back to comitup.
+    if moo_config.is_offline():
+        moo_config.update_config({"network": {"offline": False}})
+        network.apply_redirect(False)
     return WifiConnectResponse()

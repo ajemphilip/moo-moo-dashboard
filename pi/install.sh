@@ -82,6 +82,9 @@ sudo install -m 0644 "$THIS_DIR/systemd/moo-setup.service" /etc/systemd/system/
 sudo install -m 0644 "$THIS_DIR/systemd/moo-assistant.service" /etc/systemd/system/
 sudo install -m 0644 "$THIS_DIR/systemd/moo-bluetooth.service" /etc/systemd/system/
 
+echo "==> Installing moo-offline (lets a computer stay on Moo's own wifi without internet)"
+sudo install -m 0755 -o root -g root "$THIS_DIR/moo-offline" /usr/local/sbin/moo-offline
+
 echo "==> Installing sudoers fragment"
 sudo install -m 0440 -o root -g root "$THIS_DIR/sudoers.d/moo-setup" /etc/sudoers.d/moo-setup
 sudo visudo -c -f /etc/sudoers.d/moo-setup

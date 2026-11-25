@@ -73,11 +73,18 @@ def update_config(partial: dict[str, Any]) -> dict[str, Any]:
 
 def is_configured() -> bool:
     """True iff the chosen AI is set up (an OpenAI key, or a local computer)
-    and a wifi SSID is present."""
+    and the Moo has a wifi SSID, or was told to work without internet."""
     from assistant.ai_client import ai_ready
 
     cfg = load_config()
-    return ai_ready(cfg) and bool(cfg.get("wifi", {}).get("ssid"))
+    return ai_ready(cfg) and (bool(cfg.get("wifi", {}).get("ssid")) or is_offline(cfg))
+
+
+def is_offline(cfg: dict[str, Any] | None = None) -> bool:
+    """True when the parent chose to use the Moo on its own wifi, without
+    internet, with a computer's Moo Local doing the AI."""
+    cfg = load_config() if cfg is None else cfg
+    return bool((cfg.get("network") or {}).get("offline"))
 
 
 def reset_config() -> None:

@@ -1,0 +1,32 @@
+#!/bin/sh
+# moo-offline on|off|state — installed as /usr/local/sbin/moo-offline (root).
+#
+# While the Moo is on its own wifi (comitup's hotspot, 10.41.0.1) every web
+# address leads to the Moo. A Mac, iPhone or Windows computer checks for
+# internet by fetching a known page on port 80; when the answer is wrong it
+# keeps showing a "join a wifi network" window. "on" sends port 80 on the
+# hotspot to the Moo's own service (port 8000), which gives each system the
+# answer it expects, so a computer stays on the Moo's wifi without nagging.
+# "off" gives port 80 back to comitup's setup page.
+set -eu
+RULE="PREROUTING -i wlan0 -d 10.41.0.1 -p tcp --dport 80 -j REDIRECT --to-ports 8000"
+IPT=$(command -v iptables || echo /usr/sbin/iptables)
+
+case "${1:-}" in
+  on)
+    # shellcheck disable=SC2086
+    $IPT -t nat -C $RULE 2>/dev/null || $IPT -t nat -I $RULE
+    ;;
+  off)
+    # shellcheck disable=SC2086
+    while $IPT -t nat -C $RULE 2>/dev/null; do $IPT -t nat -D $RULE; done
+    ;;
+  state)
+    # shellcheck disable=SC2086
+    if $IPT -t nat -C $RULE 2>/dev/null; then echo on; else echo off; fi
+    ;;
+  *)
+    echo "usage: moo-offline on|off|state" >&2
+    exit 2
+    ;;
+esac

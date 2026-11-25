@@ -51,7 +51,7 @@ export default function ConnectPage() {
     const tick = async () => {
       const base = await discoverPi();
       if (cancelled) return;
-      if (base) { router.replace("/wifi"); return; }
+      if (base) { router.replace("/network"); return; }
       timer = window.setTimeout(tick, 2000);
     };
 

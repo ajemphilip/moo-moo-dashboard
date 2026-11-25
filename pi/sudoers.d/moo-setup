@@ -9,3 +9,5 @@ philipn1 ALL=(root) NOPASSWD: /usr/sbin/comitup-cli d
 philipn1 ALL=(root) NOPASSWD: /usr/sbin/comitup-cli m *
 philipn1 ALL=(root) NOPASSWD: /usr/bin/journalctl -u moo-setup.service -n * --no-pager --output=short-iso
 philipn1 ALL=(root) NOPASSWD: /usr/bin/journalctl -u moo-assistant.service -n * --no-pager --output=short-iso
+philipn1 ALL=(root) NOPASSWD: /usr/local/sbin/moo-offline on
+philipn1 ALL=(root) NOPASSWD: /usr/local/sbin/moo-offline off

@@ -77,6 +77,7 @@ export interface Status {
   configured: boolean;
   wifi_connected: boolean;
   wifi_ssid: string | null;
+  offline?: boolean; // used on its own wifi, without internet
   address?: string | null; // the Moo's address on the home wifi
   assistant_running: boolean;
   device_id: string;
@@ -422,4 +423,19 @@ export const localModelsApi = {
     request<{ job: LocalModelJob }>("/local-ai/models/install", { method: "POST", body: JSON.stringify({ id, replace }) }),
   remove: (id: string) =>
     request<{ removed: string }>("/local-ai/models/remove", { method: "POST", body: JSON.stringify({ id }) }),
+};
+
+// --- Using the Moo without internet (on its own wifi, with a computer's Moo Local) ---
+
+export interface NetworkState {
+  offline: boolean;
+  wifi_connected: boolean;
+  ready: boolean; // Moo Local has a story, listening and voice model
+  missing: string[]; // what is still needed before it can work without internet
+}
+
+export const networkApi = {
+  get: () => request<NetworkState>("/network"),
+  setOffline: (offline: boolean) =>
+    request<{ offline: boolean; redirected: boolean }>("/network/offline", { method: "POST", body: JSON.stringify({ offline }) }),
 };

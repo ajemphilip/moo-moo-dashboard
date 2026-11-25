@@ -14,6 +14,8 @@ type Probe = "loading" | "found-unconfigured" | "found-configured" | "missing";
 
 export default function Welcome() {
   const [probe, setProbe] = useState<Probe>("loading");
+  // Where "Continue setup" leads: on Moo's own wifi, the choice of home wifi or no internet.
+  const [nextStep, setNextStep] = useState("/wifi");
 
   useEffect(() => {
     let cancelled = false;
@@ -27,6 +29,7 @@ export default function Welcome() {
       try {
         const status = await api.status();
         if (cancelled) return;
+        setNextStep(!status.wifi_connected && getTransportKind() !== "bluetooth" ? "/network" : "/wifi");
         setProbe(status.configured ? "found-configured" : "found-unconfigured");
       } catch {
         if (!cancelled) setProbe("missing");
@@ -53,7 +56,7 @@ export default function Welcome() {
         {probe === "found-unconfigured" && (
           <>
             <p className="text-moo-ink/80">Found your Moo. Let&apos;s get it ready.</p>
-            <Button href="/wifi" className="w-full mt-2">Continue setup</Button>
+            <Button href={nextStep} className="w-full mt-2">Continue setup</Button>
           </>
         )}
         {probe === "found-configured" && (
