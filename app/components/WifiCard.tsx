@@ -35,10 +35,10 @@ export function WifiCard({ status }: { status: Status | undefined }) {
 
   const join = useQuery({ queryKey: ["wifi-join"], queryFn: wifiJoinApi.last, refetchInterval: 5000 });
   const offline = network.data?.offline ?? status?.offline ?? false;
-  // A join that failed shows while Moo is back on its own wifi; a join under way shows anywhere.
+  // A join under way shows anywhere; a failed one while Moo is on another wifi or its own.
   const joinNote = join.data?.joining
     ? { tone: "text-moo-ink/70", text: join.data.message }
-    : onOwnWifi && join.data?.ok === false && join.data.message
+    : join.data?.ok === false && join.data.message && status?.wifi_ssid !== join.data.ssid
       ? { tone: "text-red-700", text: join.data.message }
       : null;
 

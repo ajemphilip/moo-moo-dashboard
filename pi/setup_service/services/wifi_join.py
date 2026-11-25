@@ -50,6 +50,9 @@ def _seen(ssid: str) -> bool | None:
 
 
 def failure_message(ssid: str, seen: bool | None) -> str:
+    error = wifi_manager.last_error.get(ssid, "")
+    if "secrets were required" in error.lower() or "802-1x" in error.lower() or "psk" in error.lower():
+        return f"{ssid} did not accept the password. Check it, including capital letters, and try again."
     if seen is False:
         return (
             f"Moo could not see {ssid}. Moo only hears 2.4 GHz wifi: on an iPhone turn on Maximize Compatibility "
@@ -109,6 +112,8 @@ def _watch(ssid: str, seen: bool | None) -> None:
             _record(ssid, True, f"Moo joined {ssid}.")
             chime("joined")
             return
+        if wifi_manager.last_error.get(ssid):
+            break  # NetworkManager refused it and said why
         if time.monotonic() - start > HOTSPOT_GRACE_SECONDS and _is_hotspot():
             break
     logger.info("Did not join %s", ssid)

@@ -7,6 +7,9 @@ philipn1 ALL=(root) NOPASSWD: /usr/bin/systemctl restart moo-assistant.service
 philipn1 ALL=(root) NOPASSWD: /usr/sbin/iw dev wlan0 scan
 philipn1 ALL=(root) NOPASSWD: /usr/sbin/comitup-cli d
 philipn1 ALL=(root) NOPASSWD: /usr/sbin/comitup-cli m *
+philipn1 ALL=(root) NOPASSWD: /usr/bin/nmcli --wait 60 connection up id *
+# The wifi password is an argument of comitup-cli: keep it out of the system log.
+Defaults!/usr/sbin/comitup-cli !syslog, !logfile
 philipn1 ALL=(root) NOPASSWD: /usr/bin/journalctl -u moo-setup.service -n * --no-pager --output=short-iso
 philipn1 ALL=(root) NOPASSWD: /usr/bin/journalctl -u moo-assistant.service -n * --no-pager --output=short-iso
 philipn1 ALL=(root) NOPASSWD: /usr/local/sbin/moo-offline on

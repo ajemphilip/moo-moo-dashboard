@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 WIFI_INTERFACE = "wlan0"
 SCAN_CACHE_TTL_SECONDS = 10
 COMITUP_CLI = "/usr/sbin/comitup-cli"
+NMCLI = "/usr/bin/nmcli"
 
 _scan_cache: tuple[float, list["Network"]] | None = None
 
@@ -60,6 +62,31 @@ def connect_to_network(ssid: str, password: str) -> None:
     """
     args = ["sudo", COMITUP_CLI, "m", ssid, password]
     subprocess.run(args, check=True, capture_output=True, text=True, timeout=15)
+    # comitup only leaves its own hotspot for a new network. While the Moo is on
+    # another wifi it just saves this one, so NetworkManager is asked to switch.
+    current = current_ssid()
+    if current and current != ssid:
+        last_error.pop(ssid, None)
+        threading.Thread(target=_switch_to, args=(ssid,), name="wifi-switch", daemon=True).start()
+
+
+# Why NetworkManager last refused a network, by name, for the dashboard.
+last_error: dict[str, str] = {}
+
+
+def _switch_to(ssid: str) -> None:
+    time.sleep(1)
+    try:
+        result = subprocess.run(
+            ["sudo", NMCLI, "--wait", "60", "connection", "up", "id", ssid],
+            capture_output=True, text=True, timeout=75, check=False,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        last_error[ssid] = str(exc)
+        return
+    if result.returncode != 0:
+        last_error[ssid] = (result.stderr or result.stdout).strip()
+        logger.warning("nmcli could not switch to %s: %s", ssid, last_error[ssid])
 
 
 def reset_to_hotspot() -> None:
