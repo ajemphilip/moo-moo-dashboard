@@ -18,6 +18,8 @@ export default function WifiPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState(false);
+  // This device lost touch with Moo during the join, so the page cannot know the result.
+  const [lost, setLost] = useState(false);
   // Where the Moo is on the home wifi once it has joined, shown when this page cannot carry on there itself.
   const [joined, setJoined] = useState<{ ssid: string; address: string } | null>(null);
   const githubPages = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
@@ -41,10 +43,12 @@ export default function WifiPage() {
         ? await waitForBluetoothWifi(75000)
         : !!(await waitForPi(75000));
       if (!connected) {
-        setError(getTransportKind() === "bluetooth"
-          ? "Moo did not join the selected wifi. Check the password and try again."
-          : "Couldn't find your Moo on the new network. Make sure your device has rejoined your home wifi, then try again.");
-        setHandoff(false); setSubmitting(false); return;
+        if (getTransportKind() === "bluetooth") {
+          setError("Moo did not join the selected wifi. Check the password and try again.");
+          setHandoff(false); setSubmitting(false); return;
+        }
+        // This device lost touch with Moo when it left its own wifi. Moo's sound says how it went.
+        setLost(true); return;
       }
       try {
         // Refresh the stored SSID without replacing an existing API key.
@@ -84,14 +88,39 @@ export default function WifiPage() {
     );
   }
 
+  if (lost) {
+    const name = selected?.ssid ?? "the new wifi";
+    return (
+      <StepLayout title="Did Moo join?" subtitle="This device lost touch with Moo when it left its own wifi. Moo tells you with a sound.">
+        <div className="moo-card flex flex-col gap-2">
+          <h2 className="font-semibold">Rising notes: Moo joined {name}</h2>
+          <p className="text-sm text-moo-ink/70">
+            Put this device on {name} too, then open <strong className="font-mono">moo.local:8000</strong>.
+          </p>
+          <Button onClick={() => window.location.assign("http://moo.local:8000/dashboard/")}>Open Moo on {name}</Button>
+        </div>
+        <div className="moo-card flex flex-col gap-2">
+          <h2 className="font-semibold">Two low notes: Moo did not join</h2>
+          <p className="text-sm text-moo-ink/70">
+            Moo&apos;s own wifi comes back within about two minutes. Join this device to it again; the dashboard then says what went
+            wrong.
+          </p>
+          <Button variant="secondary" onClick={() => window.location.assign("http://10.41.0.1:8000/dashboard/")}>
+            Open Moo on its own wifi
+          </Button>
+        </div>
+      </StepLayout>
+    );
+  }
+
   if (handoff) {
     return (
       <StepLayout title="Connecting Moo..." subtitle="Your Moo is joining your home wifi. This usually takes 20–60 seconds.">
         <Spinner label="Looking for your Moo on the home network..." />
         {getTransportKind() !== "bluetooth" && (
           <p className="text-sm text-moo-ink/70 text-center">
-            Moo leaves its own wifi now. Put this device back on {selected?.ssid ?? "your home wifi"}, the same wifi as the Moo, if it does not
-            happen by itself.
+            Moo leaves its own wifi now. Listen to Moo: rising notes mean it joined {selected?.ssid ?? "the wifi"}, two low notes mean it
+            did not. Put this device on {selected?.ssid ?? "the same wifi"} too, if it does not happen by itself.
           </p>
         )}
       </StepLayout>

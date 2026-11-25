@@ -1,4 +1,4 @@
-"""GET /wifi/scan, POST /wifi/connect."""
+"""GET /wifi/scan, POST /wifi/connect, GET /wifi/join."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 import config as moo_config
 
 from ..models import WifiConnectRequest, WifiConnectResponse, WifiNetwork, WifiScanResponse
-from ..services import wifi_manager
+from ..services import wifi_join, wifi_manager
 from . import network
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,16 @@ def connect(req: WifiConnectRequest) -> WifiConnectResponse:
             status_code=500,
             detail=f"Could not connect to {req.ssid}: {exc.stderr.strip() or 'comitup error'}",
         ) from exc
+    # The Moo reports how the join went: a sound now, and GET /wifi/join later.
+    wifi_join.watch(req.ssid)
     # Joining a wifi ends offline use: port 80 goes back to comitup.
     if moo_config.is_offline():
         moo_config.update_config({"network": {"offline": False}})
         network.apply_redirect(False)
     return WifiConnectResponse()
+
+
+@router.get("/join")
+def last_join() -> dict:
+    """How the last join went: {ssid, ok, message, joining}, or {} if none."""
+    return wifi_join.last_join() or {}

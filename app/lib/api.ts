@@ -439,3 +439,15 @@ export const networkApi = {
   setOffline: (offline: boolean) =>
     request<{ offline: boolean; redirected: boolean }>("/network/offline", { method: "POST", body: JSON.stringify({ offline }) }),
 };
+
+/** How the Moo's last attempt to join a wifi went, kept by the Moo itself. */
+export interface WifiJoin {
+  ssid?: string;
+  ok?: boolean;
+  message?: string;
+  joining?: boolean; // still being watched (up to 90 s)
+}
+
+export const wifiJoinApi = {
+  last: () => request<WifiJoin>("/wifi/join"),
+};
