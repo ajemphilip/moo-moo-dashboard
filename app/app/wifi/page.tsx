@@ -117,6 +117,10 @@ export default function WifiPage() {
           ))}
         </div>
       )}
+      <p className="text-xs text-moo-ink/60">
+        Using an iPhone&apos;s hotspot? In Settings, Personal Hotspot, turn on Maximize Compatibility (Moo only sees 2.4 GHz
+        wifi) and keep that screen open until Moo has joined.
+      </p>
       {selected?.secured && (
         <div className="moo-card flex flex-col gap-2">
           <label className="text-sm font-medium" htmlFor="wifi-pw">Password for {selected.ssid}</label>

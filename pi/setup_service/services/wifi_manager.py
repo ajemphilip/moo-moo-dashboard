@@ -84,7 +84,26 @@ def current_ssid() -> str | None:
     if "Not connected" in result.stdout:
         return None
     match = re.search(r"SSID:\s*(.+)", result.stdout)
-    return match.group(1).strip() if match else None
+    return _unescape_ssid(match.group(1).strip()) if match else None
+
+
+def _unescape_ssid(raw: str) -> str:
+    """iw prints each byte of a name that is not plain ASCII as \\xNN, so an
+    iPhone's "Philip’s iPhone" arrives as "Philip\\xe2\\x80\\x99s iPhone".
+    Turn the escapes back into bytes and read them as UTF-8."""
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        if raw.startswith("\\x", i) and i + 4 <= len(raw):
+            try:
+                out.append(int(raw[i + 2:i + 4], 16))
+                i += 4
+                continue
+            except ValueError:
+                pass
+        out.extend(raw[i].encode("utf-8"))
+        i += 1
+    return out.decode("utf-8", errors="replace")
 
 
 def _parse_iw_scan(output: str) -> list[Network]:
@@ -113,7 +132,7 @@ def _parse_iw_scan(output: str) -> list[Network]:
             except (IndexError, ValueError):
                 pass
         elif stripped.startswith("SSID:"):
-            current["ssid"] = stripped[len("SSID:"):].strip()
+            current["ssid"] = _unescape_ssid(line.split("SSID:", 1)[1].lstrip(" \t").rstrip("\n"))
         elif "Privacy" in stripped or "RSN:" in stripped or "WPA:" in stripped:
             current["secured"] = True
     flush()
