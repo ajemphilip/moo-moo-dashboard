@@ -8,25 +8,42 @@
 # hotspot to the Moo's own service (port 8000), which gives each system the
 # answer it expects, so a computer stays on the Moo's wifi without nagging.
 # "off" gives port 80 back to comitup's setup page.
+#
+# Uses iptables when it is installed, otherwise nftables (nft), which recent
+# Raspberry Pi OS has without iptables. The nft rule lives in its own table,
+# moo_offline, so it never touches comitup's or the system's rules.
 set -eu
+PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 RULE="PREROUTING -i wlan0 -d 10.41.0.1 -p tcp --dport 80 -j REDIRECT --to-ports 8000"
-IPT=$(command -v iptables || echo /usr/sbin/iptables)
+TABLE="ip moo_offline"
 
-case "${1:-}" in
-  on)
+if command -v iptables >/dev/null 2>&1; then
+  case "${1:-}" in
     # shellcheck disable=SC2086
-    $IPT -t nat -C $RULE 2>/dev/null || $IPT -t nat -I $RULE
-    ;;
-  off)
+    on)    iptables -t nat -C $RULE 2>/dev/null || iptables -t nat -I $RULE ;;
     # shellcheck disable=SC2086
-    while $IPT -t nat -C $RULE 2>/dev/null; do $IPT -t nat -D $RULE; done
-    ;;
-  state)
+    off)   while iptables -t nat -C $RULE 2>/dev/null; do iptables -t nat -D $RULE; done ;;
     # shellcheck disable=SC2086
-    if $IPT -t nat -C $RULE 2>/dev/null; then echo on; else echo off; fi
-    ;;
-  *)
-    echo "usage: moo-offline on|off|state" >&2
-    exit 2
-    ;;
-esac
+    state) if iptables -t nat -C $RULE 2>/dev/null; then echo "on (iptables)"; else echo "off (iptables)"; fi ;;
+    *)     echo "usage: moo-offline on|off|state" >&2; exit 2 ;;
+  esac
+elif command -v nft >/dev/null 2>&1; then
+  case "${1:-}" in
+    on)
+      nft add table $TABLE
+      nft "add chain $TABLE prerouting { type nat hook prerouting priority -100; }"
+      nft flush chain $TABLE prerouting
+      nft add rule $TABLE prerouting iifname "wlan0" ip daddr 10.41.0.1 tcp dport 80 redirect to :8000
+      ;;
+    off)
+      nft delete table $TABLE 2>/dev/null || true
+      ;;
+    state)
+      if nft list chain $TABLE prerouting 2>/dev/null | grep -q "redirect to :8000"; then echo "on (nft)"; else echo "off (nft)"; fi
+      ;;
+    *) echo "usage: moo-offline on|off|state" >&2; exit 2 ;;
+  esac
+else
+  echo "moo-offline: neither iptables nor nft is installed" >&2
+  exit 1
+fi
